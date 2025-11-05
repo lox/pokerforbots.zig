@@ -1,0 +1,44 @@
+---
+version: '3'
+
+vars:
+  ZIG_OPTIMIZE: '{{.ZIG_OPTIMIZE | default "ReleaseFast"}}'
+  TEST_TIMEOUT: '{{.TEST_TIMEOUT | default "60"}}'
+  SERVER_URL: '{{.SERVER_URL | default "ws://localhost:8080/ws"}}'
+  BOT_NAME: '{{.BOT_NAME | default "zigbot"}}'
+  API_KEY: '{{.API_KEY | default "dev"}}'
+
+tasks:
+  build:
+    desc: Build all binaries
+    cmds:
+      - zig build -Doptimize={{.ZIG_OPTIMIZE}}
+
+  test:
+    desc: Run all unit tests
+    cmds:
+      - timeout {{.TEST_TIMEOUT}} zig build test
+
+  random:
+    desc: Run random bot (task random SERVER_URL=ws://localhost:8080/ws)
+    deps:
+      - build
+    cmds:
+      - zig-out/bin/random-bot --endpoint={{.SERVER_URL}} --bot-name={{.BOT_NAME}} --api-key={{.API_KEY}}
+
+  calling:
+    desc: Run calling station bot (task calling SERVER_URL=ws://localhost:8080/ws)
+    deps:
+      - build
+    cmds:
+      - zig-out/bin/calling-station-bot --endpoint={{.SERVER_URL}} --bot-name={{.BOT_NAME}} --api-key={{.API_KEY}}
+
+  clean:
+    desc: Clean build artifacts
+    cmds:
+      - rm -rf zig-out zig-cache .zig-cache
+
+  lint:
+    desc: Format check
+    cmds:
+      - zig fmt --check src examples
