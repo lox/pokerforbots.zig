@@ -307,6 +307,26 @@ task test
 task clean
 ```
 
+## Testing
+
+Run smoke tests against a local PokerForBots server:
+
+```bash
+# Test random bot (default)
+task smoke
+
+# Test calling station bot
+task smoke BOT=calling-station
+
+# Customize parameters
+task smoke HANDS=500 SEED=123 BOT=random
+
+# Use different server
+task smoke ADDR=localhost:9000 PFB_BIN=/path/to/pokerforbots
+```
+
+The smoke test spawns 6 bots and plays the specified number of hands, saving statistics to `tmp/pfb_smoke_*.json`.
+
 ## Development
 
 ```bash

@@ -42,3 +42,27 @@ tasks:
     desc: Format check
     cmds:
       - zig fmt --check src examples
+
+  test:pfbspawn:
+    desc: Run test against local PokerForBots server
+    vars:
+      SPEC: '{{.SPEC | default "random:1,calling-station:1"}}'
+      HANDS: '{{.HANDS | default "100"}}'
+      SEED: '{{.SEED | default "42"}}'
+      ADDR: '{{.ADDR | default "127.0.0.1:58327"}}'
+      API_KEY: '{{.API_KEY | default "dev"}}'
+      PFB_BIN: '{{.PFB_BIN | default "pokerforbots"}}'
+    deps:
+      - build
+    cmds:
+      - mkdir -p tmp
+      - |
+        {{.PFB_BIN}} spawn \
+          --addr {{.ADDR}} \
+          --spec "{{.SPEC}}" \
+          --min-players 3 \
+          --hand-limit {{.HANDS}} \
+          --seed {{.SEED}} \
+          --print-stats \
+          --write-stats tmp/pfb_smoke_{{.BOT}}.json \
+          --bot-cmd "./zig-out/bin/random-bot --endpoint=ws://{{.ADDR}}/ws --bot-name=zig-random --api-key={{.API_KEY}}"

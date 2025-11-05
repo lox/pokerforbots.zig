@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test
+    runs-on: ${{ matrix.os == 'ubuntu-latest' && 'namespace-profile-linux-amd64' || 'namespace-profile-mac-arm64' }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: namespacelabs/nscloud-cache-action@v1
+        with:
+          path: |
+            ~/.cache/zig
+            ~/AppData/Local/zig
+            zig-cache
+            .zig-cache
+            ${{ runner.os == 'macOS' && '~/Library/Caches/hermit/pkg' || '~/.cache/hermit/pkg' }}
+
+      - uses: cashapp/activate-hermit@v1
+        with:
+          cache: false
+
+      - name: Format check
+        run: zig fmt --check .
+
+      - name: Build debug
+        run: zig build
+
+      - name: Run tests
+        run: zig build test --summary all
+
+      - name: Build optimized
+        run: zig build -Doptimize=ReleaseFast
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: cashapp/activate-hermit@v1
+
+      - name: Check formatting
+        run: zig fmt --check .
+
+      - name: Check for TODO/FIXME comments
+        run: |
+          if grep -r "TODO\|FIXME" src/ --exclude-dir=.git; then
+            echo "Found TODO/FIXME comments that should be addressed or tracked as issues"
+            exit 0
+          fi

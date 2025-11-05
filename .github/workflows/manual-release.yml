@@ -1,0 +1,79 @@
+name: Manual Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.2.3)'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Manual Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: cashapp/activate-hermit@v1
+
+      - name: Run tests first
+        run: zig build test --summary all
+
+      - name: Validate version
+        id: version
+        run: |
+          NEW_VERSION="${{ inputs.version }}"
+          NEW_VERSION="${NEW_VERSION#v}"
+
+          if ! [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: Invalid version format. Use X.Y.Z"
+            exit 1
+          fi
+
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Generate release notes
+        id: release_notes
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          NEW_VERSION="v${{ steps.version.outputs.new_version }}"
+
+          {
+            echo "## Manual Release"
+            echo ""
+            echo "This release was created manually via workflow dispatch."
+            echo ""
+
+            if [ -n "$LAST_TAG" ]; then
+              echo "### Changes since $LAST_TAG"
+              echo ""
+              git log $LAST_TAG..HEAD --pretty=format:"- %s (%h)" --reverse
+              echo ""
+              echo ""
+              echo "**Full Changelog**: https://github.com/${{ github.repository }}/compare/${LAST_TAG}...$NEW_VERSION"
+            else
+              echo "### Initial Release"
+              echo ""
+              echo "First release of the project."
+            fi
+          } > release_notes.md
+
+          echo "RELEASE_NOTES<<EOF" >> $GITHUB_OUTPUT
+          cat release_notes.md >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.new_version }}
+          name: v${{ steps.version.outputs.new_version }}
+          body: ${{ steps.release_notes.outputs.RELEASE_NOTES }}
+          draft: false
+          prerelease: false

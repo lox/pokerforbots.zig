@@ -666,8 +666,14 @@ fn synthesizeLegalActions(allocator: std.mem.Allocator, raw: RawMessage) ![]Acti
 
     const actions = raw.valid_actions orelse return ParseError.ParseFailure;
     const legal = try allocator.alloc(ActionDescriptor, actions.len);
-    const min_bet = raw.min_bet orelse raw.min_raise orelse 0;
-    const min_raise = raw.min_raise orelse raw.min_bet orelse 0;
+    const min_bet_total = raw.min_bet orelse 0;
+    const min_raise_increment = raw.min_raise orelse 0;
+    const raise_min_total: ?u32 = if (min_bet_total != 0)
+        min_bet_total
+    else if (min_raise_increment != 0 and raw.to_call != null)
+        raw.to_call.? + min_raise_increment
+    else
+        null;
     for (actions, 0..) |atype, idx| {
         legal[idx] = switch (atype) {
             .fold => .{ .action_type = .fold },
@@ -675,12 +681,12 @@ fn synthesizeLegalActions(allocator: std.mem.Allocator, raw: RawMessage) ![]Acti
             .call => .{ .action_type = .call },
             .bet => .{
                 .action_type = .bet,
-                .min_amount = if (min_bet == 0) null else min_bet,
+                .min_amount = if (min_bet_total == 0) null else min_bet_total,
                 .max_amount = null,
             },
             .raise => .{
                 .action_type = .raise,
-                .min_amount = if (min_raise == 0) null else min_raise,
+                .min_amount = raise_min_total,
                 .max_amount = null,
             },
             .allin => .{
@@ -845,4 +851,30 @@ fn readExactly(reader: anytype, buffer: []u8) !void {
         if (amt == 0) return ParseError.ParseFailure;
         offset += amt;
     }
+}
+
+test "synthesizeLegalActions uses min_bet for raise minimum" {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var actions = try allocator.alloc(ActionType, 3);
+    defer allocator.free(actions);
+    actions[0] = .fold;
+    actions[1] = .call;
+    actions[2] = .raise;
+
+    var raw = RawMessage{};
+    raw.valid_actions = actions;
+    raw.to_call = 5;
+    raw.min_raise = 10;
+    raw.min_bet = 20;
+
+    const legal = try synthesizeLegalActions(allocator, raw);
+    defer allocator.free(legal);
+
+    try std.testing.expectEqual(@as(usize, 3), legal.len);
+    try std.testing.expectEqual(ActionType.raise, legal[2].action_type);
+    try std.testing.expect(legal[2].min_amount != null);
+    try std.testing.expectEqual(@as(u32, 20), legal[2].min_amount.?);
 }
