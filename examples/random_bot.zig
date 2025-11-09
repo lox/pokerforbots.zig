@@ -79,18 +79,15 @@ pub fn main() !void {
                     start.button,
                     hero_stack,
                 });
-                if (start.hole_cards) |cards| {
-                    std.debug.print("  Hole cards: {any}\n", .{cards});
-                }
+                std.debug.print("  Hole cards: {any}\n", .{start.hole_cards});
 
                 pfb.freeMessage(allocator, msg);
             },
 
             .action_request => |req| {
-                std.debug.print("  Action request - Pot: {}, To call: {}, Stack: {}\n", .{
+                std.debug.print("  Action request - Pot: {}, To call: {}\n", .{
                     req.pot,
                     req.to_call,
-                    req.your_stack,
                 });
 
                 // Choose random action from legal actions
@@ -142,13 +139,9 @@ pub fn main() !void {
 
             .game_completed => |completed| {
                 std.debug.print("\n=== Game Completed ===\n", .{});
-                std.debug.print("Hands played: {}\n", .{completed.hands_completed orelse 0});
-                if (completed.hand_limit) |limit| {
-                    std.debug.print("Hand limit: {}\n", .{limit});
-                }
-                if (completed.reason) |reason| {
-                    std.debug.print("Reason: {s}\n", .{reason});
-                }
+                std.debug.print("Hands played: {}\n", .{completed.hands_completed});
+                std.debug.print("Hand limit: {}\n", .{completed.hand_limit});
+                std.debug.print("Reason: {s}\n", .{completed.reason});
 
                 pfb.freeMessage(allocator, msg);
                 break;

@@ -16,7 +16,7 @@ Zig bindings for the [PokerForBots](https://github.com/lox/pokerforbots) poker b
 Requires Zig 0.15.1 or later.
 
 ```bash
-zig fetch --save "git+https://github.com/lox/pokerforbots.zig"
+zig fetch --save "git+https://github.com/lox/pokerforbots.zig?ref=v0.0.1"
 ```
 
 In your `build.zig`:
@@ -160,10 +160,8 @@ Access hole cards and game state:
         hero_stack,
     });
 
-    if (start.hole_cards) |cards| {
-        // Cards are u8 indices (0-51)
-        std.debug.print("Hole cards: {any}\n", .{cards});
-    }
+    // Cards are u8 indices (0-51)
+    std.debug.print("Hole cards: {any}\n", .{start.hole_cards});
 
     pfb.freeMessage(allocator, msg);
 },
@@ -175,10 +173,9 @@ Inspect legal actions and make strategic decisions:
 
 ```zig
 .action_request => |req| {
-    std.debug.print("Pot: {}, To call: {}, Stack: {}\n", .{
+    std.debug.print("Pot: {}, To call: {}\n", .{
         req.pot,
         req.to_call,
-        req.your_stack,
     });
 
     // Check available actions
@@ -345,6 +342,13 @@ task lint
 # Clean build artifacts
 task clean
 ```
+
+## Releasing
+
+1. Install [`svu`](https://github.com/caarlos0/svu) (via Hermit or your package manager) and ensure you're on a clean `main` branch.
+2. Run `task release` to execute `scripts/release.sh`. The script runs the full test suite before and after the bump, updates `README.md` and `build.zig.zon` with the new version, commits the change (`chore: release vX.Y.Z`), and pushes to `origin`.
+3. GitHub's Auto Release workflow listens for pushes to `main` and tags/releases the commit using the version declared in `build.zig.zon`.
+4. If automation fails, trigger the "Manual Release" GitHub workflow after ensuring `build.zig.zon` already carries the desired version.
 
 ## Performance
 

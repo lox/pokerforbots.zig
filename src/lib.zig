@@ -17,6 +17,10 @@ pub const StreetChange = protocol.StreetChange;
 pub const HandResult = protocol.HandResult;
 pub const GameCompleted = protocol.GameCompleted;
 pub const ErrorMessage = protocol.ErrorMessage;
+pub const PlayerDetailedStats = protocol.PlayerDetailedStats;
+pub const PositionStatSummary = protocol.PositionStatSummary;
+pub const StreetStatSummary = protocol.StreetStatSummary;
+pub const CategoryStatSummary = protocol.CategoryStatSummary;
 pub const IncomingMessage = protocol.IncomingMessage;
 pub const OutgoingAction = protocol.OutgoingAction;
 

@@ -43,24 +43,19 @@ pub const HandStart = struct {
     hand_id: []u8,
     your_seat: u8,
     button: u8,
-    hole_cards: ?[2]u8 = null,
-    small_blind: ?u32 = null,
-    big_blind: ?u32 = null,
+    hole_cards: [2]u8,
+    small_blind: u32,
+    big_blind: u32,
     players: []SeatInfo = &[_]SeatInfo{},
 };
 
 pub const ActionRequest = struct {
     hand_id: []u8,
-    street: ?[]u8 = null,
-    board: []u8,
     pot: u32,
     to_call: u32,
-    your_stack: u32,
     legal_actions: []ActionDescriptor,
-    is_terminal: bool = false,
-    hole_cards: ?[2]u8 = null,
-    min_bet: ?u32 = null,
-    min_raise: ?u32 = null,
+    min_bet: u32,
+    min_raise: u32,
     time_remaining_ms: u32,
 };
 
@@ -108,10 +103,66 @@ pub const HandResult = struct {
     showdown: []ShowdownHand,
 };
 
+pub const PositionStatSummary = struct {
+    label: []u8,
+    hands: u64,
+    net_bb: f64,
+    bb_per_hand: f64,
+};
+
+pub const StreetStatSummary = struct {
+    label: []u8,
+    hands_ended: u64,
+    net_bb: f64,
+    bb_per_hand: f64,
+};
+
+pub const CategoryStatSummary = struct {
+    label: []u8,
+    hands: u64,
+    net_bb: f64,
+    bb_per_hand: f64,
+};
+
+pub const PlayerDetailedStats = struct {
+    hands: u64 = 0,
+    net_bb: f64 = 0,
+    bb_per_100: f64 = 0,
+    mean: f64 = 0,
+    median: f64 = 0,
+    std_dev: f64 = 0,
+    ci_95_low: f64 = 0,
+    ci_95_high: f64 = 0,
+    winning_hands: u64 = 0,
+    win_rate: f64 = 0,
+    showdown_wins: u64 = 0,
+    non_showdown_wins: u64 = 0,
+    showdown_win_rate: f64 = 0,
+    showdown_bb: f64 = 0,
+    non_showdown_bb: f64 = 0,
+    max_pot_bb: f64 = 0,
+    big_pots: u64 = 0,
+    vpip: f64 = 0,
+    pfr: f64 = 0,
+    timeouts: u64 = 0,
+    busts: u64 = 0,
+    responses_tracked: u64 = 0,
+    avg_response_ms: f64 = 0,
+    p95_response_ms: f64 = 0,
+    max_response_ms: f64 = 0,
+    min_response_ms: f64 = 0,
+    response_std_ms: f64 = 0,
+    response_timeouts: u64 = 0,
+    response_disconnects: u64 = 0,
+    position_stats: []PositionStatSummary = &[_]PositionStatSummary{},
+    street_stats: []StreetStatSummary = &[_]StreetStatSummary{},
+    hand_category_stats: []CategoryStatSummary = &[_]CategoryStatSummary{},
+};
+
 pub const GameCompletedPlayer = struct {
     bot_id: []u8,
     display_name: []u8,
-    hands: u32,
+    hands: u64,
     net_chips: i64,
     avg_per_hand: f64,
     total_won: i64,
@@ -121,13 +172,14 @@ pub const GameCompletedPlayer = struct {
     invalid_actions: u32,
     disconnects: u32,
     busts: u32,
+    detailed_stats: ?*PlayerDetailedStats = null,
 };
 
 pub const GameCompleted = struct {
     game_id: []u8,
-    hands_completed: ?u64 = null,
-    hand_limit: ?u64 = null,
-    reason: ?[]u8 = null,
+    hands_completed: u64,
+    hand_limit: u64,
+    reason: []u8,
     seed: ?i64 = null,
     players: []GameCompletedPlayer = &[_]GameCompletedPlayer{},
 };
@@ -164,8 +216,6 @@ pub fn freeMessage(allocator: std.mem.Allocator, msg: IncomingMessage) void {
         },
         .action_request => |req| {
             allocator.free(req.hand_id);
-            allocator.free(req.board);
-            if (req.street) |street| allocator.free(street);
             allocator.free(req.legal_actions);
         },
         .game_update => |update| {
@@ -191,7 +241,7 @@ pub fn freeMessage(allocator: std.mem.Allocator, msg: IncomingMessage) void {
         },
         .game_completed => |completed| {
             allocator.free(completed.game_id);
-            if (completed.reason) |reason| allocator.free(reason);
+            allocator.free(completed.reason);
             freeGameCompletedPlayers(allocator, completed.players);
         },
         .error_message => |err| {
@@ -212,6 +262,33 @@ fn freePlayerStates(allocator: std.mem.Allocator, players: []PlayerState) void {
     if (players.len == 0) return;
     for (players) |player| allocator.free(player.name);
     allocator.free(players);
+}
+
+fn freePositionStats(allocator: std.mem.Allocator, stats: []PositionStatSummary) void {
+    if (stats.len == 0) return;
+    for (stats) |entry| allocator.free(entry.label);
+    allocator.free(stats);
+}
+
+fn freeStreetStats(allocator: std.mem.Allocator, stats: []StreetStatSummary) void {
+    if (stats.len == 0) return;
+    for (stats) |entry| allocator.free(entry.label);
+    allocator.free(stats);
+}
+
+fn freeCategoryStats(allocator: std.mem.Allocator, stats: []CategoryStatSummary) void {
+    if (stats.len == 0) return;
+    for (stats) |entry| allocator.free(entry.label);
+    allocator.free(stats);
+}
+
+fn freeDetailedStats(allocator: std.mem.Allocator, stats: *PlayerDetailedStats) void {
+    freePositionStats(allocator, stats.position_stats);
+    freeStreetStats(allocator, stats.street_stats);
+    freeCategoryStats(allocator, stats.hand_category_stats);
+    stats.position_stats = &[_]PositionStatSummary{};
+    stats.street_stats = &[_]StreetStatSummary{};
+    stats.hand_category_stats = &[_]CategoryStatSummary{};
 }
 
 fn freeWinners(allocator: std.mem.Allocator, winners: []Winner) void {
@@ -239,6 +316,10 @@ fn freeGameCompletedPlayers(allocator: std.mem.Allocator, players: []GameComplet
     for (players) |player| {
         allocator.free(player.bot_id);
         allocator.free(player.display_name);
+        if (player.detailed_stats) |stats| {
+            freeDetailedStats(allocator, stats);
+            allocator.destroy(stats);
+        }
     }
     allocator.free(players);
 }
@@ -270,6 +351,10 @@ fn freeRawGameCompletedPlayers(allocator: std.mem.Allocator, players: []RawGameC
     for (players) |player| {
         allocator.free(player.bot_id);
         allocator.free(player.display_name);
+        if (player.detailed_stats) |stats| {
+            freeDetailedStats(allocator, stats);
+            allocator.destroy(stats);
+        }
     }
     allocator.free(players);
 }
@@ -338,7 +423,7 @@ fn convertShowdownHands(allocator: std.mem.Allocator, raw: []RawShowdownHand) ![
 fn convertCompletedPlayers(allocator: std.mem.Allocator, raw: []RawGameCompletedPlayer) ![]GameCompletedPlayer {
     const players = try allocator.alloc(GameCompletedPlayer, raw.len);
     errdefer allocator.free(players);
-    for (raw, 0..) |entry, idx| {
+    for (raw, 0..) |*entry, idx| {
         players[idx].bot_id = try allocator.dupe(u8, entry.bot_id);
         players[idx].display_name = try allocator.dupe(u8, entry.display_name);
         players[idx].hands = entry.hands;
@@ -351,8 +436,189 @@ fn convertCompletedPlayers(allocator: std.mem.Allocator, raw: []RawGameCompleted
         players[idx].invalid_actions = entry.invalid_actions;
         players[idx].disconnects = entry.disconnects;
         players[idx].busts = entry.busts;
+        if (entry.detailed_stats) |stats| {
+            players[idx].detailed_stats = stats;
+            entry.detailed_stats = null;
+        } else {
+            players[idx].detailed_stats = null;
+        }
     }
     return players;
+}
+
+fn readDetailedStats(allocator: std.mem.Allocator, unpacker: anytype) !*PlayerDetailedStats {
+    const stats = try allocator.create(PlayerDetailedStats);
+    stats.* = .{};
+    errdefer allocator.destroy(stats);
+
+    const len = try unpacker.readMapHeader(u32);
+    var i: u32 = 0;
+    while (i < len) : (i += 1) {
+        const key = try unpacker.read([]const u8);
+        defer allocator.free(key);
+        if (std.mem.eql(u8, key, "hands")) {
+            stats.hands = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "net_bb")) {
+            stats.net_bb = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "bb_per_100")) {
+            stats.bb_per_100 = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "mean")) {
+            stats.mean = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "median")) {
+            stats.median = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "std_dev")) {
+            stats.std_dev = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "ci_95_low")) {
+            stats.ci_95_low = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "ci_95_high")) {
+            stats.ci_95_high = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "winning_hands")) {
+            stats.winning_hands = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "win_rate")) {
+            stats.win_rate = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "showdown_wins")) {
+            stats.showdown_wins = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "non_showdown_wins")) {
+            stats.non_showdown_wins = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "showdown_win_rate")) {
+            stats.showdown_win_rate = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "showdown_bb")) {
+            stats.showdown_bb = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "non_showdown_bb")) {
+            stats.non_showdown_bb = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "max_pot_bb")) {
+            stats.max_pot_bb = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "big_pots")) {
+            stats.big_pots = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "vpip")) {
+            stats.vpip = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "pfr")) {
+            stats.pfr = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "timeouts")) {
+            stats.timeouts = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "busts")) {
+            stats.busts = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "responses_tracked")) {
+            stats.responses_tracked = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "avg_response_ms")) {
+            stats.avg_response_ms = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "p95_response_ms")) {
+            stats.p95_response_ms = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "max_response_ms")) {
+            stats.max_response_ms = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "min_response_ms")) {
+            stats.min_response_ms = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "response_std_ms")) {
+            stats.response_std_ms = try unpacker.read(f64);
+        } else if (std.mem.eql(u8, key, "response_timeouts")) {
+            stats.response_timeouts = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "response_disconnects")) {
+            stats.response_disconnects = try readUnsignedFieldU64(unpacker);
+        } else if (std.mem.eql(u8, key, "position_stats")) {
+            stats.position_stats = try readPositionStats(allocator, unpacker);
+        } else if (std.mem.eql(u8, key, "street_stats")) {
+            stats.street_stats = try readStreetStats(allocator, unpacker);
+        } else if (std.mem.eql(u8, key, "hand_category_stats")) {
+            stats.hand_category_stats = try readCategoryStats(allocator, unpacker);
+        } else {
+            try skipValue(unpacker);
+        }
+    }
+
+    return stats;
+}
+
+fn readUnsignedFieldU64(unpacker: anytype) !u64 {
+    const value = try unpacker.read(i64);
+    if (value < 0) return ParseError.ParseFailure;
+    return @intCast(value);
+}
+
+fn readPositionStats(allocator: std.mem.Allocator, unpacker: anytype) ![]PositionStatSummary {
+    const count = try unpacker.readMapHeader(u32);
+    const stats = try allocator.alloc(PositionStatSummary, count);
+    errdefer allocator.free(stats);
+    var idx: usize = 0;
+    while (idx < count) : (idx += 1) {
+        const label = try unpacker.read([]const u8);
+        const label_copy = try allocator.dupe(u8, label);
+        allocator.free(label);
+        stats[idx].label = label_copy;
+        const entry_len = try unpacker.readMapHeader(u32);
+        var j: u32 = 0;
+        while (j < entry_len) : (j += 1) {
+            const key = try unpacker.read([]const u8);
+            defer allocator.free(key);
+            if (std.mem.eql(u8, key, "hands")) {
+                stats[idx].hands = try readUnsignedFieldU64(unpacker);
+            } else if (std.mem.eql(u8, key, "net_bb")) {
+                stats[idx].net_bb = try unpacker.read(f64);
+            } else if (std.mem.eql(u8, key, "bb_per_hand")) {
+                stats[idx].bb_per_hand = try unpacker.read(f64);
+            } else {
+                try skipValue(unpacker);
+            }
+        }
+    }
+    return stats;
+}
+
+fn readStreetStats(allocator: std.mem.Allocator, unpacker: anytype) ![]StreetStatSummary {
+    const count = try unpacker.readMapHeader(u32);
+    const stats = try allocator.alloc(StreetStatSummary, count);
+    errdefer allocator.free(stats);
+    var idx: usize = 0;
+    while (idx < count) : (idx += 1) {
+        const label = try unpacker.read([]const u8);
+        const label_copy = try allocator.dupe(u8, label);
+        allocator.free(label);
+        stats[idx].label = label_copy;
+        const entry_len = try unpacker.readMapHeader(u32);
+        var j: u32 = 0;
+        while (j < entry_len) : (j += 1) {
+            const key = try unpacker.read([]const u8);
+            defer allocator.free(key);
+            if (std.mem.eql(u8, key, "hands_ended")) {
+                stats[idx].hands_ended = try readUnsignedFieldU64(unpacker);
+            } else if (std.mem.eql(u8, key, "net_bb")) {
+                stats[idx].net_bb = try unpacker.read(f64);
+            } else if (std.mem.eql(u8, key, "bb_per_hand")) {
+                stats[idx].bb_per_hand = try unpacker.read(f64);
+            } else {
+                try skipValue(unpacker);
+            }
+        }
+    }
+    return stats;
+}
+
+fn readCategoryStats(allocator: std.mem.Allocator, unpacker: anytype) ![]CategoryStatSummary {
+    const count = try unpacker.readMapHeader(u32);
+    const stats = try allocator.alloc(CategoryStatSummary, count);
+    errdefer allocator.free(stats);
+    var idx: usize = 0;
+    while (idx < count) : (idx += 1) {
+        const label = try unpacker.read([]const u8);
+        const label_copy = try allocator.dupe(u8, label);
+        allocator.free(label);
+        stats[idx].label = label_copy;
+        const entry_len = try unpacker.readMapHeader(u32);
+        var j: u32 = 0;
+        while (j < entry_len) : (j += 1) {
+            const key = try unpacker.read([]const u8);
+            defer allocator.free(key);
+            if (std.mem.eql(u8, key, "hands")) {
+                stats[idx].hands = try readUnsignedFieldU64(unpacker);
+            } else if (std.mem.eql(u8, key, "net_bb")) {
+                stats[idx].net_bb = try unpacker.read(f64);
+            } else if (std.mem.eql(u8, key, "bb_per_hand")) {
+                stats[idx].bb_per_hand = try unpacker.read(f64);
+            } else {
+                try skipValue(unpacker);
+            }
+        }
+    }
+    return stats;
 }
 
 // Internal structures for msgpack decoding
@@ -492,7 +758,7 @@ const RawShowdownHand = struct {
 const RawGameCompletedPlayer = struct {
     bot_id: []const u8 = &[_]u8{},
     display_name: []const u8 = &[_]u8{},
-    hands: u32 = 0,
+    hands: u64 = 0,
     net_chips: i64 = 0,
     avg_per_hand: f64 = 0,
     total_won: i64 = 0,
@@ -502,6 +768,7 @@ const RawGameCompletedPlayer = struct {
     invalid_actions: u32 = 0,
     disconnects: u32 = 0,
     busts: u32 = 0,
+    detailed_stats: ?*PlayerDetailedStats = null,
 
     pub fn msgpackRead(unpacker: anytype) !RawGameCompletedPlayer {
         const len = try unpacker.readMapHeader(u32);
@@ -545,6 +812,8 @@ const RawGameCompletedPlayer = struct {
                 const value = try unpacker.read(i64);
                 if (value < 0) return ParseError.ParseFailure;
                 result.busts = @intCast(value);
+            } else if (std.mem.eql(u8, key, "detailed_stats")) {
+                result.detailed_stats = try readDetailedStats(allocator, unpacker);
             } else {
                 try skipValue(unpacker);
             }
@@ -729,9 +998,9 @@ fn synthesizeLegalActions(
     allocator: std.mem.Allocator,
     legal_raw: ?[]RawActionDescriptor,
     valid_actions: ?[]ActionType,
-    min_bet: ?u32,
-    min_raise: ?u32,
-    to_call: ?u32,
+    min_bet: u32,
+    min_raise: u32,
+    to_call: u32,
 ) ![]ActionDescriptor {
     if (legal_raw) |entries| {
         const legal = try allocator.alloc(ActionDescriptor, entries.len);
@@ -748,12 +1017,12 @@ fn synthesizeLegalActions(
 
     const actions = valid_actions orelse return ParseError.ParseFailure;
     const legal = try allocator.alloc(ActionDescriptor, actions.len);
-    const min_bet_total = min_bet orelse 0;
-    const min_raise_increment = min_raise orelse 0;
+    const min_bet_total = min_bet;
+    const min_raise_increment = min_raise;
     const raise_min_total: ?u32 = if (min_bet_total != 0)
         min_bet_total
-    else if (min_raise_increment != 0 and to_call != null)
-        to_call.? + min_raise_increment
+    else if (min_raise_increment != 0)
+        to_call + min_raise_increment
     else
         null;
     for (actions, 0..) |atype, idx| {
@@ -827,17 +1096,17 @@ fn decodeHandStart(allocator: std.mem.Allocator, data: []const u8) !HandStart {
     const seat_index = your_seat orelse return ParseError.ParseFailure;
     const btn = button orelse return ParseError.ParseFailure;
     const raw_players = players_raw orelse return ParseError.ParseFailure;
+    const cards_buf = hole_cards_raw orelse return ParseError.ParseFailure;
+    if (cards_buf.len != 2) return ParseError.ParseFailure;
+    defer allocator.free(@constCast(cards_buf));
+    const hole_cards = [2]u8{ cards_buf[0], cards_buf[1] };
+    hole_cards_raw = null;
+    const sb = small_blind orelse return ParseError.ParseFailure;
+    const bb = big_blind orelse return ParseError.ParseFailure;
 
     const players = try convertSeatInfo(allocator, raw_players);
     freeRawPlayers(allocator, raw_players);
     players_raw = null;
-
-    var hole_cards: ?[2]u8 = null;
-    if (hole_cards_raw) |cards| {
-        defer allocator.free(@constCast(cards));
-        if (cards.len == 2) hole_cards = .{ cards[0], cards[1] };
-        hole_cards_raw = null;
-    }
 
     const hand_id = @constCast(raw_id);
     hand_id_slice = null;
@@ -847,8 +1116,8 @@ fn decodeHandStart(allocator: std.mem.Allocator, data: []const u8) !HandStart {
         .your_seat = seat_index,
         .button = btn,
         .hole_cards = hole_cards,
-        .small_blind = small_blind,
-        .big_blind = big_blind,
+        .small_blind = sb,
+        .big_blind = bb,
         .players = players,
     };
 }
@@ -917,12 +1186,13 @@ fn decodeLegacyGameStart(allocator: std.mem.Allocator, data: []const u8) !HandSt
         stack_sizes = null;
     }
 
-    var hole_cards: ?[2]u8 = null;
-    if (hole_cards_raw) |cards| {
-        defer allocator.free(@constCast(cards));
-        if (cards.len == 2) hole_cards = .{ cards[0], cards[1] };
-        hole_cards_raw = null;
-    }
+    const cards_buf = hole_cards_raw orelse return ParseError.ParseFailure;
+    if (cards_buf.len != 2) return ParseError.ParseFailure;
+    defer allocator.free(@constCast(cards_buf));
+    const hole_cards = [2]u8{ cards_buf[0], cards_buf[1] };
+    hole_cards_raw = null;
+    const sb = small_blind orelse return ParseError.ParseFailure;
+    const bb = big_blind orelse return ParseError.ParseFailure;
 
     const hand_id = @constCast(base_id);
     game_id_slice = null;
@@ -932,8 +1202,8 @@ fn decodeLegacyGameStart(allocator: std.mem.Allocator, data: []const u8) !HandSt
         .your_seat = seat_index,
         .button = btn,
         .hole_cards = hole_cards,
-        .small_blind = small_blind,
-        .big_blind = big_blind,
+        .small_blind = sb,
+        .big_blind = bb,
         .players = seat_infos,
     };
 }
@@ -944,23 +1214,16 @@ fn decodeActionRequest(allocator: std.mem.Allocator, data: []const u8) !ActionRe
     const len = try unpacker.readMapHeader(u32);
 
     var hand_id_slice: ?[]const u8 = null;
-    var street_name: ?[]const u8 = null;
-    var board_cards: ?[]const u8 = null;
     var pot: ?u32 = null;
     var to_call: ?u32 = null;
-    var your_stack: ?u32 = null;
     var legal_actions_raw: ?[]RawActionDescriptor = null;
     var valid_actions_raw: ?[]ActionType = null;
-    var hole_cards_raw: ?[2]u8 = null;
     var min_bet: ?u32 = null;
     var min_raise: ?u32 = null;
     var time_remaining: ?u32 = null;
-    var is_terminal = false;
 
     errdefer {
         if (hand_id_slice) |slice| allocator.free(slice);
-        if (street_name) |slice| allocator.free(slice);
-        if (board_cards) |cards| allocator.free(@constCast(cards));
         if (legal_actions_raw) |entries| allocator.free(entries);
         if (valid_actions_raw) |entries| allocator.free(entries);
     }
@@ -971,32 +1234,20 @@ fn decodeActionRequest(allocator: std.mem.Allocator, data: []const u8) !ActionRe
         defer allocator.free(key);
         if (std.mem.eql(u8, key, "hand_id")) {
             hand_id_slice = try unpacker.read([]const u8);
-        } else if (std.mem.eql(u8, key, "street")) {
-            street_name = try unpacker.read([]const u8);
-        } else if (std.mem.eql(u8, key, "board")) {
-            board_cards = try readCardIndices(allocator, unpacker);
         } else if (std.mem.eql(u8, key, "pot")) {
             pot = try unpacker.read(u32);
         } else if (std.mem.eql(u8, key, "to_call")) {
             to_call = try unpacker.read(u32);
-        } else if (std.mem.eql(u8, key, "your_stack")) {
-            your_stack = try unpacker.read(u32);
         } else if (std.mem.eql(u8, key, "legal_actions")) {
             legal_actions_raw = try unpacker.read([]RawActionDescriptor);
         } else if (std.mem.eql(u8, key, "valid_actions")) {
             valid_actions_raw = try readActionTypeArray(allocator, unpacker);
-        } else if (std.mem.eql(u8, key, "hole_cards")) {
-            const cards = try readCardIndices(allocator, unpacker);
-            defer allocator.free(@constCast(cards));
-            if (cards.len == 2) hole_cards_raw = .{ cards[0], cards[1] };
         } else if (std.mem.eql(u8, key, "min_bet")) {
             min_bet = try unpacker.read(u32);
         } else if (std.mem.eql(u8, key, "min_raise")) {
             min_raise = try unpacker.read(u32);
         } else if (std.mem.eql(u8, key, "time_remaining")) {
             time_remaining = try unpacker.read(u32);
-        } else if (std.mem.eql(u8, key, "is_terminal")) {
-            is_terminal = try unpacker.read(bool);
         } else {
             try skipValue(unpacker);
         }
@@ -1005,43 +1256,26 @@ fn decodeActionRequest(allocator: std.mem.Allocator, data: []const u8) !ActionRe
     const hand_id_slice_val = hand_id_slice orelse return ParseError.ParseFailure;
     const pot_value = pot orelse return ParseError.ParseFailure;
     const to_call_value = to_call orelse return ParseError.ParseFailure;
-    const stack_value = your_stack orelse 0;
+    const min_bet_value = min_bet orelse return ParseError.ParseFailure;
+    const min_raise_value = min_raise orelse return ParseError.ParseFailure;
     const time_remaining_ms = time_remaining orelse return ParseError.ParseFailure;
 
-    const actions = try synthesizeLegalActions(allocator, legal_actions_raw, valid_actions_raw, min_bet, min_raise, to_call);
+    const actions = try synthesizeLegalActions(allocator, legal_actions_raw, valid_actions_raw, min_bet_value, min_raise_value, to_call_value);
     if (legal_actions_raw) |entries| allocator.free(entries);
     if (valid_actions_raw) |entries| allocator.free(entries);
     legal_actions_raw = null;
     valid_actions_raw = null;
 
-    const board = if (board_cards) |cards| blk: {
-        const dup = try allocator.dupe(u8, cards);
-        allocator.free(@constCast(cards));
-        board_cards = null;
-        break :blk dup;
-    } else try allocator.alloc(u8, 0);
-
     const hand_id = @constCast(hand_id_slice_val);
     hand_id_slice = null;
 
-    var street_copy: ?[]u8 = null;
-    if (street_name) |street| {
-        street_copy = @constCast(street);
-        street_name = null;
-    }
-
     return ActionRequest{
         .hand_id = hand_id,
-        .street = street_copy,
-        .board = board,
         .pot = pot_value,
         .to_call = to_call_value,
-        .your_stack = stack_value,
         .legal_actions = actions,
-        .is_terminal = is_terminal,
-        .hole_cards = hole_cards_raw,
-        .min_bet = min_bet,
-        .min_raise = min_raise,
+        .min_bet = min_bet_value,
+        .min_raise = min_raise_value,
         .time_remaining_ms = time_remaining_ms,
     };
 }
@@ -1326,12 +1560,15 @@ fn decodeGameCompleted(allocator: std.mem.Allocator, data: []const u8) !GameComp
 
     const game_id = @constCast(game_id_slice orelse return ParseError.ParseFailure);
     game_id_slice = null;
-    const reason = if (reason_slice) |reason| blk: {
-        const dup = try allocator.dupe(u8, reason);
-        allocator.free(reason);
+    const hands_completed_value = hands_completed orelse return ParseError.ParseFailure;
+    const hand_limit_value = hand_limit orelse return ParseError.ParseFailure;
+    const reason_slice_val = reason_slice orelse return ParseError.ParseFailure;
+    const reason = blk: {
+        const dup = try allocator.dupe(u8, reason_slice_val);
+        allocator.free(reason_slice_val);
         reason_slice = null;
         break :blk dup;
-    } else null;
+    };
 
     const players = if (players_raw) |entries| blk: {
         defer freeRawGameCompletedPlayers(allocator, entries);
@@ -1341,8 +1578,8 @@ fn decodeGameCompleted(allocator: std.mem.Allocator, data: []const u8) !GameComp
 
     return GameCompleted{
         .game_id = game_id,
-        .hands_completed = hands_completed,
-        .hand_limit = hand_limit,
+        .hands_completed = hands_completed_value,
+        .hand_limit = hand_limit_value,
         .reason = reason,
         .seed = seed,
         .players = players,
