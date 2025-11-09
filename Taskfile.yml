@@ -43,6 +43,11 @@ tasks:
     cmds:
       - zig fmt --check src examples
 
+  release:
+    desc: Bump version using svu next --always and push release commit
+    cmds:
+      - ./scripts/release.sh
+
   test:pfbspawn:
     desc: Run test against local PokerForBots server
     vars:
