@@ -71,7 +71,7 @@ pub const PlayerAction = struct {
     seat: u8,
     player_name: []u8,
     action: []u8,
-    amount_paid: u32,
+    amount_paid: i32,
     player_bet: u32,
     player_chips: u32,
     pot: u32,
@@ -1337,7 +1337,7 @@ fn decodePlayerAction(allocator: std.mem.Allocator, data: []const u8) !PlayerAct
     var player_name_slice: ?[]const u8 = null;
     var action_slice: ?[]const u8 = null;
     var seat: ?u8 = null;
-    var amount_paid: ?u32 = null;
+    var amount_paid: ?i32 = null;
     var player_bet: ?u32 = null;
     var player_chips: ?u32 = null;
     var pot: ?u32 = null;
@@ -1364,7 +1364,7 @@ fn decodePlayerAction(allocator: std.mem.Allocator, data: []const u8) !PlayerAct
         } else if (std.mem.eql(u8, key, "seat")) {
             seat = try unpacker.read(u8);
         } else if (std.mem.eql(u8, key, "amount_paid")) {
-            amount_paid = try unpacker.read(u32);
+            amount_paid = try unpacker.read(i32);
         } else if (std.mem.eql(u8, key, "player_bet")) {
             player_bet = try unpacker.read(u32);
         } else if (std.mem.eql(u8, key, "player_chips")) {

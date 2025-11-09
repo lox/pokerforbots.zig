@@ -37,6 +37,67 @@ const Args = struct {
     }
 };
 
+const CallingStation = struct {
+    hands_played: u32 = 0,
+
+    pub const callbacks = pfb.BotCallbacks(*CallingStation){
+        .onHandStart = onHandStart,
+        .onActionRequired = onActionRequired,
+        .onHandComplete = onHandComplete,
+    };
+
+    fn onHandStart(self: *CallingStation, state: *const pfb.GameState) !void {
+        self.hands_played += 1;
+        const hero_stack = state.heroStack() orelse 0;
+        std.debug.print("\n[Hand {}] Starting - Seat: {}, Button: {}, Chips: {}\n", .{
+            self.hands_played,
+            state.hero_seat,
+            state.button,
+            hero_stack,
+        });
+        std.debug.print("  Hole cards: {any}\n", .{state.hole_cards});
+    }
+
+    fn onActionRequired(
+        self: *CallingStation,
+        state: *const pfb.GameState,
+        request: protocol.ActionRequest,
+    ) !protocol.OutgoingAction {
+        _ = self;
+        std.debug.print("  Action request - Pot: {}, To call: {}\n", .{
+            state.pot,
+            state.to_call,
+        });
+
+        // Calling station strategy: always call/check if possible, otherwise fold
+        const action = if (findAction(request.legal_actions, .call)) |call_action|
+            protocol.OutgoingAction{
+                .action_type = .call,
+                .amount = call_action.min_amount,
+            }
+        else
+            protocol.OutgoingAction{
+                .action_type = .fold,
+                .amount = null,
+            };
+
+        std.debug.print("  Choosing: {s}", .{@tagName(action.action_type)});
+        if (action.amount) |amt| {
+            std.debug.print(" ({})\n", .{amt});
+        } else {
+            std.debug.print("\n", .{});
+        }
+
+        return action;
+    }
+
+    fn onHandComplete(self: *CallingStation, state: *const pfb.GameState, result: protocol.HandResult) !void {
+        _ = self;
+        _ = state;
+        _ = result;
+    }
+};
+
 fn findAction(actions: []const protocol.ActionDescriptor, action_type: protocol.ActionType) ?protocol.ActionDescriptor {
     for (actions) |action| {
         if (action.action_type == action_type) return action;
@@ -65,106 +126,8 @@ pub fn main() !void {
         .timeout_ms = 5000,
     };
 
-    var connector = client.Connector.init(allocator, config);
-    var conn = try connector.connect();
-    defer conn.deinit();
+    var bot = CallingStation{};
+    try pfb.run(allocator, config, &bot, CallingStation.callbacks, .{});
 
-    std.debug.print("Connected successfully!\n", .{});
-
-    var hands_played: u32 = 0;
-
-    while (try conn.readMessage()) |msg| {
-        switch (msg) {
-            .hand_start => |start| {
-                hands_played += 1;
-                const hero_stack = findSeat(start.players, start.your_seat) orelse 0;
-                std.debug.print("\n[Hand {}] Starting - Seat: {}, Button: {}, Chips: {}\n", .{
-                    hands_played,
-                    start.your_seat,
-                    start.button,
-                    hero_stack,
-                });
-                std.debug.print("  Hole cards: {any}\n", .{start.hole_cards});
-
-                pfb.freeMessage(allocator, msg);
-            },
-
-            .action_request => |req| {
-                std.debug.print("  Action request - Pot: {}, To call: {}\n", .{
-                    req.pot,
-                    req.to_call,
-                });
-
-                // Calling station strategy: always call/check if possible, otherwise fold
-                const action = if (findAction(req.legal_actions, .call)) |call_action|
-                    protocol.OutgoingAction{
-                        .action_type = .call,
-                        .amount = call_action.min_amount,
-                    }
-                else
-                    protocol.OutgoingAction{
-                        .action_type = .fold,
-                        .amount = null,
-                    };
-
-                std.debug.print("  Choosing: {s}", .{@tagName(action.action_type)});
-                if (action.amount) |amt| {
-                    std.debug.print(" ({})\n", .{amt});
-                } else {
-                    std.debug.print("\n", .{});
-                }
-
-                try conn.sendAction(action);
-
-                pfb.freeMessage(allocator, msg);
-            },
-
-            .game_update => |update| {
-                std.debug.print("  Game update - Pot: {}, Players: {}\n", .{
-                    update.pot,
-                    update.players.len,
-                });
-
-                pfb.freeMessage(allocator, msg);
-            },
-
-            .player_action => |_| {
-                pfb.freeMessage(allocator, msg);
-            },
-
-            .street_change => |_| {
-                pfb.freeMessage(allocator, msg);
-            },
-
-            .hand_result => |_| {
-                pfb.freeMessage(allocator, msg);
-            },
-
-            .error_message => |err| {
-                std.debug.print("Protocol error: {s} - {s}\n", .{ err.code, err.message });
-                pfb.freeMessage(allocator, msg);
-            },
-
-            .game_completed => |completed| {
-                std.debug.print("\n=== Game Completed ===\n", .{});
-                std.debug.print("Hands played: {}\n", .{completed.hands_completed});
-                std.debug.print("Hand limit: {}\n", .{completed.hand_limit});
-                std.debug.print("Reason: {s}\n", .{completed.reason});
-
-                pfb.freeMessage(allocator, msg);
-                break;
-            },
-
-            .noop => {},
-        }
-    }
-
-    std.debug.print("\nBot finished. Total hands played: {}\n", .{hands_played});
-}
-
-fn findSeat(players: []const pfb.protocol.SeatInfo, seat: u8) ?u32 {
-    for (players) |player| {
-        if (player.seat == seat) return player.chips;
-    }
-    return null;
+    std.debug.print("\nBot finished. Total hands played: {}\n", .{bot.hands_played});
 }

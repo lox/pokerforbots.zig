@@ -17,7 +17,7 @@ tasks:
   test:
     desc: Run all unit tests
     cmds:
-      - timeout {{.TEST_TIMEOUT}} zig build test
+      - timeout {{.TEST_TIMEOUT}} zig build test --summary all
 
   random:
     desc: Run random bot (task random SERVER_URL=ws://localhost:8080/ws)

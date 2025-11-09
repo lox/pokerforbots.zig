@@ -1,10 +1,11 @@
 # PokerForBots Zig SDK
 
-Zig bindings for the [PokerForBots](https://github.com/lox/pokerforbots) poker bot server. Build high-performance poker bots with type-safe message handling and zero-overhead abstractions.
+Zig bindings for the [PokerForBots](https://github.com/lox/pokerforbots) poker bot server. Build high-performance poker bots with type-safe message handling and automatic game state tracking.
 
 ## Features
 
-- **Protocol v2 support**: Simplified 4-action system (fold, call, raise, allin)
+- **Callback-based API**: Focus on strategy, not protocol handling
+- **Automatic state tracking**: Built-in GameState manages pot, players, and history
 - **Type-safe messages**: Union-based message handling with compile-time guarantees
 - **MessagePack encoding**: Efficient binary protocol serialization
 - **WebSocket client**: Built-in connection management with TLS support
@@ -36,45 +37,102 @@ exe.root_module.addImport("pokerforbots", pokerforbots.module("pokerforbots"));
 const std = @import("std");
 const pfb = @import("pokerforbots");
 
+const MyBot = struct {
+    hands_played: u32 = 0,
+
+    pub const callbacks = pfb.BotCallbacks(*MyBot){
+        .onHandStart = onHandStart,
+        .onActionRequired = onActionRequired,
+        .onHandComplete = onHandComplete,
+    };
+
+    fn onHandStart(self: *MyBot, state: *const pfb.GameState) !void {
+        self.hands_played += 1;
+        std.debug.print("Hand {}: {} players active\n", .{
+            self.hands_played,
+            state.playerCount(),
+        });
+    }
+
+    fn onActionRequired(
+        self: *MyBot,
+        state: *const pfb.GameState,
+        request: pfb.ActionRequest,
+    ) !pfb.OutgoingAction {
+        _ = self;
+
+        // Make decision based on game state
+        if (state.raiseDepth() > 2) {
+            return .{ .action_type = .fold };
+        }
+
+        // Call if possible, otherwise fold
+        for (request.legal_actions) |action| {
+            if (action.action_type == .call) {
+                return .{
+                    .action_type = .call,
+                    .amount = action.min_amount,
+                };
+            }
+        }
+
+        return .{ .action_type = .fold };
+    }
+
+    fn onHandComplete(
+        self: *MyBot,
+        state: *const pfb.GameState,
+        result: pfb.HandResult,
+    ) !void {
+        _ = self;
+        _ = state;
+        _ = result;
+    }
+};
+
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
-    // Connect to server
     const config = pfb.Config{
         .endpoint = "ws://localhost:8080/ws",
         .api_key = "your-api-key",
         .bot_name = "my-bot",
     };
 
-    var connector = pfb.Connector.init(allocator, config);
-    var conn = try connector.connect();
-    defer conn.deinit();
+    var bot = MyBot{};
+    try pfb.run(allocator, config, &bot, MyBot.callbacks, .{});
+}
+```
 
-    // Main game loop
-    while (try conn.readMessage()) |msg| {
-        switch (msg) {
-            .action_request => |_| {
-                // Make decision
-                const action = pfb.OutgoingAction{
-                    .action_type = .call,
-                    .amount = null,
-                };
-                try conn.sendAction(action);
+## Game State
 
-                // Cleanup - frees all nested allocations
-                pfb.freeMessage(allocator, msg);
-            },
-            .game_completed => |_| {
-                pfb.freeMessage(allocator, msg);
-                break;
-            },
-            else => {
-                pfb.freeMessage(allocator, msg);
-            },
-        }
-    }
+The `GameState` struct automatically tracks game information and provides useful queries:
+
+```zig
+fn onActionRequired(
+    self: *MyBot,
+    state: *const pfb.GameState,
+    request: pfb.ActionRequest,
+) !pfb.OutgoingAction {
+    // Current game info
+    const pot = state.pot;
+    const to_call = state.to_call;
+    const street = state.street; // .preflop, .flop, .turn, .river
+
+    // Player queries
+    const active = state.playerCount(); // Players still in hand
+    const hero_chips = state.heroStack() orelse 0;
+
+    // Action tracking
+    const raises = state.raiseDepth(); // Number of raises this street
+    const aggressor = state.lastAggressor(); // Most recent bettor/raiser
+
+    // Position
+    const position = state.seatToButton(state.hero_seat);
+
+    // Make decision...
 }
 ```
 
@@ -82,23 +140,59 @@ pub fn main() !void {
 
 ### Random Bot
 
-Makes random valid decisions:
+Chooses random valid actions:
 
 ```zig
-const pfb = @import("pokerforbots");
+const RandomBot = struct {
+    rng: std.Random.DefaultPrng,
+    hands_played: u32 = 0,
 
-// Choose random action from legal actions
-var prng = std.Random.DefaultPrng.init(@bitCast(std.time.timestamp()));
-const random = prng.random();
+    pub fn init(seed: u64) RandomBot {
+        return .{ .rng = std.Random.DefaultPrng.init(seed) };
+    }
 
-const action_idx = random.intRangeAtMost(usize, 0, req.legal_actions.len - 1);
-const chosen = req.legal_actions[action_idx];
+    pub const callbacks = pfb.BotCallbacks(*RandomBot){
+        .onHandStart = onHandStart,
+        .onActionRequired = onActionRequired,
+        .onHandComplete = onHandComplete,
+    };
 
-const action = pfb.OutgoingAction{
-    .action_type = chosen.action_type,
-    .amount = chosen.min_amount,
+    fn onHandStart(self: *RandomBot, state: *const pfb.GameState) !void {
+        self.hands_played += 1;
+        std.debug.print("Hand {}: Hole cards {any}\n", .{
+            self.hands_played,
+            state.hole_cards,
+        });
+    }
+
+    fn onActionRequired(
+        self: *RandomBot,
+        state: *const pfb.GameState,
+        request: pfb.ActionRequest,
+    ) !pfb.OutgoingAction {
+        _ = state;
+        const random = self.rng.random();
+
+        // Pick random legal action
+        const idx = random.intRangeAtMost(usize, 0, request.legal_actions.len - 1);
+        const chosen = request.legal_actions[idx];
+
+        return pfb.OutgoingAction{
+            .action_type = chosen.action_type,
+            .amount = chosen.min_amount,
+        };
+    }
+
+    fn onHandComplete(
+        self: *RandomBot,
+        state: *const pfb.GameState,
+        result: pfb.HandResult,
+    ) !void {
+        _ = self;
+        _ = state;
+        _ = result;
+    }
 };
-try conn.sendAction(action);
 ```
 
 Run it:
@@ -112,26 +206,39 @@ task random SERVER_URL=ws://localhost:8080/ws BOT_NAME=random-bot
 Always calls/checks when possible:
 
 ```zig
-fn findAction(actions: []const pfb.ActionDescriptor, action_type: pfb.ActionType) ?pfb.ActionDescriptor {
-    for (actions) |action| {
-        if (action.action_type == action_type) return action;
-    }
-    return null;
-}
+const CallingStation = struct {
+    hands_played: u32 = 0,
 
-// Calling station strategy
-const action = if (findAction(req.legal_actions, .call)) |call_action|
-    pfb.OutgoingAction{
-        .action_type = .call,
-        .amount = call_action.min_amount,
-    }
-else
-    pfb.OutgoingAction{
-        .action_type = .fold,
-        .amount = null,
+    pub const callbacks = pfb.BotCallbacks(*CallingStation){
+        .onHandStart = onHandStart,
+        .onActionRequired = onActionRequired,
+        .onHandComplete = onHandComplete,
     };
 
-try conn.sendAction(action);
+    fn onActionRequired(
+        self: *CallingStation,
+        state: *const pfb.GameState,
+        request: pfb.ActionRequest,
+    ) !pfb.OutgoingAction {
+        _ = self;
+        _ = state;
+
+        // Find call action
+        for (request.legal_actions) |action| {
+            if (action.action_type == .call) {
+                return pfb.OutgoingAction{
+                    .action_type = .call,
+                    .amount = action.min_amount,
+                };
+            }
+        }
+
+        // No call available, must fold
+        return .{ .action_type = .fold };
+    }
+
+    // ... other callbacks
+};
 ```
 
 Run it:
@@ -140,120 +247,148 @@ Run it:
 task calling SERVER_URL=ws://localhost:8080/ws BOT_NAME=calling-bot
 ```
 
-### Hand Information
+### Position-Aware Strategy
 
-Access hole cards and game state:
-
-```zig
-.hand_start => |start| {
-    var hero_stack: u32 = 0;
-    for (start.players) |player| {
-        if (player.seat == start.your_seat) {
-            hero_stack = player.chips;
-            break;
-        }
-    }
-    std.debug.print("Hand {s} | Seat: {}, Button: {}, Chips: {}\n", .{
-        start.hand_id,
-        start.your_seat,
-        start.button,
-        hero_stack,
-    });
-
-    // Cards are u8 indices (0-51)
-    std.debug.print("Hole cards: {any}\n", .{start.hole_cards});
-
-    pfb.freeMessage(allocator, msg);
-},
-```
-
-### Action Decisions
-
-Inspect legal actions and make strategic decisions:
+Use GameState to make position-based decisions:
 
 ```zig
-.action_request => |req| {
-    std.debug.print("Pot: {}, To call: {}\n", .{
-        req.pot,
-        req.to_call,
-    });
+fn onActionRequired(
+    self: *MyBot,
+    state: *const pfb.GameState,
+    request: pfb.ActionRequest,
+) !pfb.OutgoingAction {
+    const position = state.seatToButton(state.hero_seat);
+    const active = state.playerCount();
+    const raises = state.raiseDepth();
 
-    // Check available actions
-    for (req.legal_actions) |legal| {
-        std.debug.print("  {s}", .{@tagName(legal.action_type)});
-        if (legal.min_amount) |min| {
-            std.debug.print(" (min: {})\n", .{min});
-        } else {
-            std.debug.print("\n", .{});
+    // Late position (button or cutoff)
+    const is_late_position = position >= active - 2;
+
+    // Be aggressive in late position with no raises
+    if (is_late_position and raises == 0) {
+        for (request.legal_actions) |action| {
+            if (action.action_type == .raise) {
+                return pfb.OutgoingAction{
+                    .action_type = .raise,
+                    .amount = action.min_amount,
+                };
+            }
         }
     }
 
-    // Make decision based on pot odds, hand strength, etc.
-    const pot_odds = @as(f64, @floatFromInt(req.to_call)) /
-                     @as(f64, @floatFromInt(req.pot + req.to_call));
+    // Early position: play tighter when facing aggression
+    if (position < 2 and raises > 1) {
+        return .{ .action_type = .fold };
+    }
 
-    // Your strategy here...
+    // Default to calling
+    for (request.legal_actions) |action| {
+        if (action.action_type == .call) {
+            return pfb.OutgoingAction{
+                .action_type = .call,
+                .amount = action.min_amount,
+            };
+        }
+    }
 
-    pfb.freeMessage(allocator, msg);
-},
+    return .{ .action_type = .fold };
+}
 ```
 
-### Game Updates
+### Action History
 
-Track opponent actions and pot size:
+Track opponent actions using GameState history:
 
 ```zig
-.game_update => |update| {
-    std.debug.print("Pot: {}\n", .{update.pot});
-
-    for (update.players) |player| {
-        std.debug.print("  {s}: chips={}, bet={}, folded={}\n", .{
-            player.name,
-            player.chips,
-            player.bet,
-            player.folded,
-        });
+fn onActionRequired(
+    self: *MyBot,
+    state: *const pfb.GameState,
+    request: pfb.ActionRequest,
+) !pfb.OutgoingAction {
+    // Count preflop raises
+    var preflop_raises: u32 = 0;
+    for (state.history.items) |action| {
+        if (action.street == .preflop and
+            (action.action_type == .raise or action.action_type == .bet)) {
+            preflop_raises += 1;
+        }
     }
 
-    pfb.freeMessage(allocator, msg);
-},
+    // Check if last aggressor is still active
+    if (state.lastAggressor()) |aggressor| {
+        std.debug.print("Facing aggression from {s}\n", .{aggressor.name});
+    }
+
+    // Make decision based on history...
+}
 ```
 
-### Game Completion
+## Advanced Usage
 
-Handle end-of-game statistics:
+### Run Options
+
+Customize bot execution:
 
 ```zig
-.game_completed => |completed| {
-    std.debug.print("Game finished!\n", .{});
-    std.debug.print("  Hands: {}\n", .{completed.hands_completed orelse 0});
+try pfb.run(allocator, config, &bot, MyBot.callbacks, .{
+    .max_hands = 100,  // Stop after 100 hands
+    .logger = logger,  // Optional MessageLogger for debugging
+});
+```
 
-    if (completed.hand_limit) |limit| {
-        std.debug.print("  Limit: {}\n", .{limit});
+### Message Logging
+
+Debug protocol messages:
+
+```zig
+const log_file = try std.fs.cwd().createFile("messages.jsonl", .{});
+defer log_file.close();
+
+const logger = pfb.MessageLogger{
+    .enabled = true,
+    .file = &log_file,
+    .allocator = allocator,
+};
+
+try pfb.run(allocator, config, &bot, MyBot.callbacks, .{
+    .logger = logger,
+});
+```
+
+### Low-Level API
+
+For advanced use cases, you can use the low-level connection API directly:
+
+```zig
+var connector = pfb.Connector.init(allocator, config);
+var conn = try connector.connect();
+defer conn.deinit();
+
+while (try conn.readMessage()) |msg| {
+    defer pfb.freeMessage(allocator, msg);
+
+    switch (msg) {
+        .action_request => |req| {
+            const action = pfb.OutgoingAction{
+                .action_type = .call,
+                .amount = null,
+            };
+            try conn.sendAction(action);
+        },
+        .game_completed => break,
+        else => {},
     }
-
-    if (completed.reason) |reason| {
-        std.debug.print("  Reason: {s}\n", .{reason});
-    }
-
-    pfb.freeMessage(allocator, msg);
-    break; // Exit game loop
-},
+}
 ```
 
 ## Protocol
 
-### Action Types (Protocol v2)
+### Action Types
 
 - **fold**: Give up the hand
 - **call**: Match current bet (or check if to_call = 0)
 - **raise**: Increase the bet (amount is total bet size, not increment)
-- **allin**: Bet entire stack (amount field ignored)
-
-Protocol v2 simplifies bot logic by eliminating context-dependent actions:
-- Use `call` for both checking and calling
-- Use `raise` for both betting and raising
-- Server handles normalization based on game state
+- **allin**: Bet entire stack
 
 ### Message Types
 
@@ -271,27 +406,6 @@ pub const IncomingMessage = union(enum) {
 };
 ```
 
-### Memory Management
-
-Use `pfb.freeMessage()` to clean up all allocated memory in a message:
-
-```zig
-while (try conn.readMessage()) |msg| {
-    defer pfb.freeMessage(allocator, msg);  // Automatic cleanup
-
-    switch (msg) {
-        .action_request => |req| {
-            // Use req fields...
-            try conn.sendAction(action);
-        },
-        .game_completed => break,
-        else => {},
-    }
-}
-```
-
-This handles all nested allocations (strings, arrays, player names, etc.) automatically.
-
 ## Building
 
 ```bash
@@ -299,7 +413,7 @@ This handles all nested allocations (strings, arrays, player names, etc.) automa
 zig build
 
 # Run tests
-zig build test
+task test
 
 # Build with optimizations
 zig build -Doptimize=ReleaseFast
@@ -316,19 +430,19 @@ Run smoke tests against a local PokerForBots server:
 
 ```bash
 # Test random bot (default)
-task smoke
+task test:pfbspawn
 
 # Test calling station bot
-task smoke BOT=calling-station
+task test:pfbspawn BOT=calling-station
 
 # Customize parameters
-task smoke HANDS=500 SEED=123 BOT=random
+task test:pfbspawn HANDS=500 SEED=123
 
 # Use different server
-task smoke ADDR=localhost:9000 PFB_BIN=/path/to/pokerforbots
+task test:pfbspawn ADDR=localhost:9000 PFB_BIN=/path/to/pokerforbots
 ```
 
-The smoke test spawns 6 bots and plays the specified number of hands, saving statistics to `tmp/pfb_smoke_*.json`.
+The smoke test spawns bots and plays the specified number of hands, saving statistics to `tmp/pfb_smoke_*.json`.
 
 ## Development
 
