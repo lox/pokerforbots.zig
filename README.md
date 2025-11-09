@@ -125,11 +125,6 @@ const action = if (findAction(req.legal_actions, .call)) |call_action|
         .action_type = .call,
         .amount = call_action.min_amount,
     }
-else if (findAction(req.legal_actions, .check)) |_|
-    pfb.OutgoingAction{
-        .action_type = .check,
-        .amount = null,
-    }
 else
     pfb.OutgoingAction{
         .action_type = .fold,
@@ -150,11 +145,19 @@ task calling SERVER_URL=ws://localhost:8080/ws BOT_NAME=calling-bot
 Access hole cards and game state:
 
 ```zig
-.game_start => |start| {
-    std.debug.print("Seat: {}, Button: {}, Chips: {}\n", .{
-        start.player_index,
+.hand_start => |start| {
+    var hero_stack: u32 = 0;
+    for (start.players) |player| {
+        if (player.seat == start.your_seat) {
+            hero_stack = player.chips;
+            break;
+        }
+    }
+    std.debug.print("Hand {s} | Seat: {}, Button: {}, Chips: {}\n", .{
+        start.hand_id,
+        start.your_seat,
         start.button,
-        start.stack_sizes[start.player_index],
+        hero_stack,
     });
 
     if (start.hole_cards) |cards| {
@@ -259,12 +262,15 @@ Protocol v2 simplifies bot logic by eliminating context-dependent actions:
 
 ```zig
 pub const IncomingMessage = union(enum) {
-    game_start: GameStart,        // Hand begins
+    hand_start: HandStart,        // Hand begins
     action_request: ActionRequest, // Decision point
-    game_update: GameUpdate,       // State change
-    hand_complete: HandSummary,    // Hand ends
-    game_completed: GameCompleted, // Game ends
-    noop,                          // Unhandled message
+    game_update: GameUpdate,       // Table snapshot
+    player_action: PlayerAction,   // Every wager/post
+    street_change: StreetChange,   // Board update
+    hand_result: HandResult,       // Winners + showdown
+    game_completed: GameCompleted, // Simulation end
+    error_message: ErrorMessage,   // Protocol error
+    noop,
 };
 ```
 

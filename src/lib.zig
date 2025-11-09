@@ -10,9 +10,13 @@ pub const Connector = client.Connector;
 pub const Connection = client.Connection;
 pub const ActionType = protocol.ActionType;
 pub const ActionRequest = protocol.ActionRequest;
-pub const GameStart = protocol.GameStart;
+pub const HandStart = protocol.HandStart;
 pub const GameUpdate = protocol.GameUpdate;
+pub const PlayerAction = protocol.PlayerAction;
+pub const StreetChange = protocol.StreetChange;
+pub const HandResult = protocol.HandResult;
 pub const GameCompleted = protocol.GameCompleted;
+pub const ErrorMessage = protocol.ErrorMessage;
 pub const IncomingMessage = protocol.IncomingMessage;
 pub const OutgoingAction = protocol.OutgoingAction;
 

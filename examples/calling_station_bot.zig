@@ -75,13 +75,14 @@ pub fn main() !void {
 
     while (try conn.readMessage()) |msg| {
         switch (msg) {
-            .game_start => |start| {
+            .hand_start => |start| {
                 hands_played += 1;
+                const hero_stack = findSeat(start.players, start.your_seat) orelse 0;
                 std.debug.print("\n[Hand {}] Starting - Seat: {}, Button: {}, Chips: {}\n", .{
                     hands_played,
-                    start.player_index,
+                    start.your_seat,
                     start.button,
-                    start.stack_sizes[start.player_index],
+                    hero_stack,
                 });
                 if (start.hole_cards) |cards| {
                     std.debug.print("  Hole cards: {any}\n", .{cards});
@@ -102,11 +103,6 @@ pub fn main() !void {
                     protocol.OutgoingAction{
                         .action_type = .call,
                         .amount = call_action.min_amount,
-                    }
-                else if (findAction(req.legal_actions, .check)) |_|
-                    protocol.OutgoingAction{
-                        .action_type = .check,
-                        .amount = null,
                     }
                 else
                     protocol.OutgoingAction{
@@ -135,8 +131,20 @@ pub fn main() !void {
                 pfb.freeMessage(allocator, msg);
             },
 
-            .hand_complete => |_| {
-                std.debug.print("  Hand complete\n", .{});
+            .player_action => |_| {
+                pfb.freeMessage(allocator, msg);
+            },
+
+            .street_change => |_| {
+                pfb.freeMessage(allocator, msg);
+            },
+
+            .hand_result => |_| {
+                pfb.freeMessage(allocator, msg);
+            },
+
+            .error_message => |err| {
+                std.debug.print("Protocol error: {s} - {s}\n", .{ err.code, err.message });
                 pfb.freeMessage(allocator, msg);
             },
 
@@ -159,4 +167,11 @@ pub fn main() !void {
     }
 
     std.debug.print("\nBot finished. Total hands played: {}\n", .{hands_played});
+}
+
+fn findSeat(players: []const pfb.protocol.SeatInfo, seat: u8) ?u32 {
+    for (players) |player| {
+        if (player.seat == seat) return player.chips;
+    }
+    return null;
 }
