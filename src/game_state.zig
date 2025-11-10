@@ -10,6 +10,12 @@ pub const Street = enum(u3) {
     river,
 };
 
+/// Tracks current betting state for decision-making.
+///
+/// All chip amounts use i64 (signed) to simplify delta calculations and
+/// prevent underflow when computing raise amounts and bet differences.
+/// Chip values are never negative in practice but signed arithmetic
+/// makes the math cleaner and safer.
 pub const BettingState = struct {
     /// Current pot size in cents
     pot_cents: i64,
@@ -25,6 +31,8 @@ pub const BettingState = struct {
     street: Street,
 
     /// Ratio between the price to call and the current pot.
+    /// Returns 0.0 if pot is empty or non-positive.
+    /// Example: pot=100, to_call=50 -> ratio=0.5 (getting 2:1 pot odds)
     pub fn callRatio(self: BettingState) f64 {
         if (self.pot_cents <= 0) return 0.0;
         return @as(f64, @floatFromInt(self.to_call_cents)) / @as(f64, @floatFromInt(self.pot_cents));
@@ -97,6 +105,7 @@ pub const GameState = struct {
     raise_count: u8 = 0,
     pending_hero_actions: usize = 0,
     hero_index: ?usize = null,
+    hand_active: bool = false,
     betting_state: ?BettingState = null,
 
     pub fn init(allocator: std.mem.Allocator) GameState {
@@ -128,6 +137,7 @@ pub const GameState = struct {
         self.hero_index = null;
         self.hole_cards = null;
         self.betting_state = null;
+        self.hand_active = false;
     }
 
     pub fn onHandStart(self: *GameState, start: protocol.HandStart) !void {
@@ -194,6 +204,7 @@ pub const GameState = struct {
         else
             (@as(u64, 1) << @intCast(storage.len)) - 1;
         try self.rebuildActivePlayers();
+        self.hand_active = true;
     }
 
     pub fn onActionRequest(self: *GameState, request: protocol.ActionRequest) void {
@@ -511,10 +522,20 @@ pub const GameState = struct {
         }
     }
 
+    /// Returns a pointer to the BettingState, initializing it with defaults if needed.
+    ///
+    /// In normal operation, onHandStart() should initialize betting_state with blinds.
+    /// This fallback exists for robustness but should rarely trigger in practice.
+    /// Lazily create betting state. onHandStart() must have been called first.
     fn ensureBettingState(self: *GameState) *BettingState {
+        // Allow zero-player test doubles but ensure real hands call onHandStart() first.
+        std.debug.assert(self.hand_active or self.betting_state != null or self.players.len == 0);
         if (self.betting_state) |*state| {
             return state;
         }
+        // Debug mode: verify initialization order. In production, we lazily initialize
+        // to handle edge cases gracefully (e.g., partial snapshot recovery).
+        std.debug.assert(self.players.len > 0); // onHandStart should have been called
         self.betting_state = BettingState{
             .pot_cents = @as(i64, @intCast(self.pot)),
             .to_call_cents = @as(i64, @intCast(self.to_call)),
@@ -560,13 +581,11 @@ pub const GameState = struct {
 
         switch (kind) {
             .bet, .raise => {
-                markPreRaiseSnapshot(state, prev_pot, prev_to_call);
-                applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(action.player_bet)));
+                recordRaise(state, prev_pot, prev_to_call, action.player_bet);
             },
             .allin => {
                 if (action.player_bet > prev_max_bet) {
-                    markPreRaiseSnapshot(state, prev_pot, prev_to_call);
-                    applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(action.player_bet)));
+                    recordRaise(state, prev_pot, prev_to_call, action.player_bet);
                 } else {
                     state.to_call_cents = 0;
                 }
@@ -592,13 +611,11 @@ pub const GameState = struct {
 
         switch (kind) {
             .bet, .raise => {
-                markPreRaiseSnapshot(state, prev_pot, prev_to_call);
-                applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(hero_total)));
+                recordRaise(state, prev_pot, prev_to_call, hero_total);
             },
             .allin => {
                 if (hero_total > prev_max_bet) {
-                    markPreRaiseSnapshot(state, prev_pot, prev_to_call);
-                    applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(hero_total)));
+                    recordRaise(state, prev_pot, prev_to_call, hero_total);
                 } else {
                     state.to_call_cents = 0;
                 }
@@ -628,6 +645,11 @@ pub const GameState = struct {
         }
     }
 
+    fn recordRaise(state: *BettingState, prev_pot: i64, prev_to_call: i64, new_total: u32) void {
+        markPreRaiseSnapshot(state, prev_pot, prev_to_call);
+        applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(new_total)));
+    }
+
     fn updateRaiseFromTotals(state: *BettingState, prev_max_bet: u32, new_max_bet: u32) void {
         state.to_call_cents = @as(i64, @intCast(new_max_bet));
         const delta = @as(i64, @intCast(new_max_bet)) - @as(i64, @intCast(prev_max_bet));
@@ -641,6 +663,8 @@ pub const GameState = struct {
         state.to_call_before_last_raise_cents = prev_to_call;
     }
 
+    /// Compute how many chips hero still owes relative to the street max bet.
+    /// Used when snapshots lack an explicit `to_call` field (see snapshot test).
     fn heroOutstandingCall(self: *const GameState, max_bet: u32) i64 {
         const idx = self.hero_index orelse return 0;
         const info = self.players[idx];
@@ -1417,10 +1441,23 @@ test "onActionRequest updates pot and to_call" {
     var state = GameState.init(allocator);
     defer state.deinit();
 
-    state.pot = 10;
-    state.to_call = 5;
-
+    // Initialize game state properly with onHandStart
     var hand_id = [_]u8{'h'};
+    var hero_name = [_]u8{ 'h', 'e', 'r', 'o' };
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 1000 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 0,
+        .hole_cards = .{ 1, 2 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+
     var legal = [_]protocol.ActionDescriptor{.{ .action_type = .call }};
     const request = protocol.ActionRequest{
         .hand_id = hand_id[0..],
