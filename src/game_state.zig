@@ -17,6 +17,10 @@ pub const BettingState = struct {
     to_call_cents: i64,
     /// Most recent raise delta in cents (increase from previous bet)
     last_raise_delta_cents: i64,
+    /// Pot size before the most recent raise
+    pot_before_last_raise_cents: i64,
+    /// Price to call before the most recent raise
+    to_call_before_last_raise_cents: i64,
     /// Street where this state applies
     street: Street,
 
@@ -145,6 +149,8 @@ pub const GameState = struct {
             .pot_cents = @as(i64, @intCast(blinds_total)),
             .to_call_cents = @as(i64, @intCast(start.big_blind)),
             .last_raise_delta_cents = @as(i64, @intCast(start.big_blind)),
+            .pot_before_last_raise_cents = @as(i64, @intCast(blinds_total)),
+            .to_call_before_last_raise_cents = @as(i64, @intCast(start.big_blind)),
             .street = .preflop,
         };
 
@@ -513,6 +519,8 @@ pub const GameState = struct {
             .pot_cents = @as(i64, @intCast(self.pot)),
             .to_call_cents = @as(i64, @intCast(self.to_call)),
             .last_raise_delta_cents = 0,
+            .pot_before_last_raise_cents = @as(i64, @intCast(self.pot)),
+            .to_call_before_last_raise_cents = @as(i64, @intCast(self.to_call)),
             .street = self.street,
         };
         return &self.betting_state.?;
@@ -526,9 +534,12 @@ pub const GameState = struct {
         new_max_bet: u32,
     ) void {
         var state = self.ensureBettingState();
+        const prev_pot_cents = state.pot_cents;
+        const prev_to_call = state.to_call_cents;
         state.pot_cents = @as(i64, @intCast(new_pot));
 
         if (new_max_bet > prev_max_bet) {
+            markPreRaiseSnapshot(state, prev_pot_cents, prev_to_call);
             updateRaiseFromTotals(state, prev_max_bet, new_max_bet);
         } else if (new_pot > prev_pot and state.to_call_cents > 0) {
             state.to_call_cents = 0;
@@ -542,16 +553,19 @@ pub const GameState = struct {
         prev_max_bet: u32,
     ) void {
         var state = self.ensureBettingState();
+        const prev_pot = state.pot_cents;
+        const prev_to_call = state.to_call_cents;
         state.pot_cents = @as(i64, @intCast(action.pot));
         state.street = self.street;
-        const prev_to_call = state.to_call_cents;
 
         switch (kind) {
             .bet, .raise => {
+                markPreRaiseSnapshot(state, prev_pot, prev_to_call);
                 applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(action.player_bet)));
             },
             .allin => {
                 if (action.player_bet > prev_max_bet) {
+                    markPreRaiseSnapshot(state, prev_pot, prev_to_call);
                     applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(action.player_bet)));
                 } else {
                     state.to_call_cents = 0;
@@ -571,16 +585,19 @@ pub const GameState = struct {
         hero_total: u32,
     ) void {
         var state = self.ensureBettingState();
+        const prev_pot = state.pot_cents;
+        const prev_to_call = state.to_call_cents;
         state.pot_cents = @as(i64, @intCast(self.pot));
         state.street = self.street;
-        const prev_to_call = state.to_call_cents;
 
         switch (kind) {
             .bet, .raise => {
+                markPreRaiseSnapshot(state, prev_pot, prev_to_call);
                 applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(hero_total)));
             },
             .allin => {
                 if (hero_total > prev_max_bet) {
+                    markPreRaiseSnapshot(state, prev_pot, prev_to_call);
                     applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(hero_total)));
                 } else {
                     state.to_call_cents = 0;
@@ -598,6 +615,8 @@ pub const GameState = struct {
         state.pot_cents = @as(i64, @intCast(self.pot));
         state.to_call_cents = 0;
         state.last_raise_delta_cents = 0;
+        state.pot_before_last_raise_cents = state.pot_cents;
+        state.to_call_before_last_raise_cents = state.to_call_cents;
         state.street = self.street;
     }
 
@@ -611,10 +630,15 @@ pub const GameState = struct {
 
     fn updateRaiseFromTotals(state: *BettingState, prev_max_bet: u32, new_max_bet: u32) void {
         state.to_call_cents = @as(i64, @intCast(new_max_bet));
-        const delta: i64 = @intCast(@as(i64, @intCast(new_max_bet)) - @as(i64, @intCast(prev_max_bet)));
+        const delta = @as(i64, @intCast(new_max_bet)) - @as(i64, @intCast(prev_max_bet));
         if (delta > 0) {
             state.last_raise_delta_cents = delta;
         }
+    }
+
+    fn markPreRaiseSnapshot(state: *BettingState, prev_pot: i64, prev_to_call: i64) void {
+        state.pot_before_last_raise_cents = prev_pot;
+        state.to_call_before_last_raise_cents = prev_to_call;
     }
 
     fn parseStreet(label: []const u8) !Street {
@@ -963,6 +987,8 @@ test "BettingState initializes with blinds" {
     try std.testing.expectEqual(@as(i64, 150), betting.pot_cents);
     try std.testing.expectEqual(@as(i64, 100), betting.to_call_cents);
     try std.testing.expectEqual(@as(i64, 100), betting.last_raise_delta_cents);
+    try std.testing.expectEqual(@as(i64, 150), betting.pot_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 100), betting.to_call_before_last_raise_cents);
     try std.testing.expectEqual(Street.preflop, betting.street);
 }
 
@@ -1005,7 +1031,10 @@ test "BettingState tracks raises and street changes" {
     try state.onPlayerAction(action);
     const betting_after_raise = state.betting_state.?;
     try std.testing.expectEqual(@as(i64, 450), betting_after_raise.pot_cents);
+    try std.testing.expectEqual(@as(i64, 300), betting_after_raise.to_call_cents);
     try std.testing.expectEqual(@as(i64, 200), betting_after_raise.last_raise_delta_cents);
+    try std.testing.expectEqual(@as(i64, 150), betting_after_raise.pot_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 100), betting_after_raise.to_call_before_last_raise_cents);
     try std.testing.expectEqual(Street.preflop, betting_after_raise.street);
 
     var flop_label = [_]u8{ 'f', 'l', 'o', 'p' };
@@ -1020,6 +1049,8 @@ test "BettingState tracks raises and street changes" {
     try std.testing.expectEqual(@as(i64, 450), betting_flop.pot_cents);
     try std.testing.expectEqual(@as(i64, 0), betting_flop.to_call_cents);
     try std.testing.expectEqual(@as(i64, 0), betting_flop.last_raise_delta_cents);
+    try std.testing.expectEqual(@as(i64, 450), betting_flop.pot_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 0), betting_flop.to_call_before_last_raise_cents);
     try std.testing.expectEqual(Street.flop, betting_flop.street);
 }
 
@@ -1063,6 +1094,8 @@ test "BettingState handles sequential raises" {
     const betting_after_first = state.betting_state.?;
     try std.testing.expectEqual(@as(i64, 300), betting_after_first.to_call_cents);
     try std.testing.expectEqual(@as(i64, 200), betting_after_first.last_raise_delta_cents);
+    try std.testing.expectEqual(@as(i64, 150), betting_after_first.pot_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 100), betting_after_first.to_call_before_last_raise_cents);
 
     const second_raise = protocol.PlayerAction{
         .hand_id = hand_id[0..],
@@ -1079,6 +1112,8 @@ test "BettingState handles sequential raises" {
     const betting_after_second = state.betting_state.?;
     try std.testing.expectEqual(@as(i64, 900), betting_after_second.to_call_cents);
     try std.testing.expectEqual(@as(i64, 600), betting_after_second.last_raise_delta_cents);
+    try std.testing.expectEqual(@as(i64, 450), betting_after_second.pot_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 300), betting_after_second.to_call_before_last_raise_cents);
 }
 
 test "BettingState call clears outstanding bet" {
@@ -1188,6 +1223,8 @@ test "onGameUpdate synchronizes betting snapshot" {
     try std.testing.expectEqual(@as(i64, 1050), betting_after_update.pot_cents);
     try std.testing.expectEqual(@as(i64, 900), betting_after_update.to_call_cents);
     try std.testing.expectEqual(@as(i64, 600), betting_after_update.last_raise_delta_cents);
+    try std.testing.expectEqual(@as(i64, 450), betting_after_update.pot_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 300), betting_after_update.to_call_before_last_raise_cents);
 }
 
 test "recordHeroAction fold updates mask" {
