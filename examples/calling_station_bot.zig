@@ -12,8 +12,8 @@ const Args = struct {
 
     pub fn parse(allocator: std.mem.Allocator) !Args {
         var args = Args{
-            .endpoint = undefined,
-            .bot_name = undefined,
+            .endpoint = "",
+            .bot_name = "",
         };
 
         var iter = try std.process.argsWithAllocator(allocator);
@@ -33,6 +33,8 @@ const Args = struct {
             }
         }
 
+        if (args.endpoint.len == 0) return error.MissingEndpointArg;
+        if (args.bot_name.len == 0) return error.MissingBotNameArg;
         return args;
     }
 };

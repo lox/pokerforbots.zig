@@ -39,9 +39,10 @@ tasks:
       - rm -rf zig-out zig-cache .zig-cache
 
   lint:
-    desc: Format check
+    desc: Format and lint
     cmds:
-      - zig fmt --check src examples
+      - git ls-files '*.zig' | xargs zig fmt --check
+      - git ls-files '*.zig' | zlint --stdin --deny-warnings
 
   release:
     desc: Bump version using svu next --always and push release commit

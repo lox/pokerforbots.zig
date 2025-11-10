@@ -32,10 +32,9 @@ repos:
         files: \.zig$
       - id: zlint
         name: zlint
-        entry: zlint
+        entry: zlint --deny-warnings
         language: system
         files: \.zig$
-        pass_filenames: false
       - id: zig-test
         name: zig build test
         entry: zig build test
