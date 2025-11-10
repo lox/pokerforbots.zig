@@ -541,8 +541,12 @@ pub const GameState = struct {
         if (new_max_bet > prev_max_bet) {
             markPreRaiseSnapshot(state, prev_pot_cents, prev_to_call);
             updateRaiseFromTotals(state, prev_max_bet, new_max_bet);
-        } else if (new_pot > prev_pot and state.to_call_cents > 0) {
-            state.to_call_cents = 0;
+        } else if (new_pot > prev_pot) {
+            const outstanding = self.heroOutstandingCall(new_max_bet);
+            state.to_call_cents = outstanding;
+            if (outstanding == 0) {
+                state.last_raise_delta_cents = 0;
+            }
         }
     }
 
@@ -639,6 +643,16 @@ pub const GameState = struct {
     fn markPreRaiseSnapshot(state: *BettingState, prev_pot: i64, prev_to_call: i64) void {
         state.pot_before_last_raise_cents = prev_pot;
         state.to_call_before_last_raise_cents = prev_to_call;
+    }
+
+    fn heroOutstandingCall(self: *const GameState, max_bet: u32) i64 {
+        const idx = self.hero_index orelse return 0;
+        const info = self.players[idx];
+        if (info.folded or info.all_in) return 0;
+        if (max_bet > info.bet) {
+            return @as(i64, @intCast(max_bet - info.bet));
+        }
+        return 0;
     }
 
     fn parseStreet(label: []const u8) !Street {
@@ -1225,6 +1239,62 @@ test "onGameUpdate synchronizes betting snapshot" {
     try std.testing.expectEqual(@as(i64, 600), betting_after_update.last_raise_delta_cents);
     try std.testing.expectEqual(@as(i64, 450), betting_after_update.pot_before_last_raise_cents);
     try std.testing.expectEqual(@as(i64, 300), betting_after_update.to_call_before_last_raise_cents);
+}
+
+test "snapshot preserves outstanding hero call when pot grows" {
+    const allocator = std.testing.allocator;
+    var state = GameState.init(allocator);
+    defer state.deinit();
+
+    var hand_id = [_]u8{'o'};
+    var hero_name = [_]u8{'h'};
+    var opp_name = [_]u8{'v'};
+    var cold_caller = [_]u8{'c'};
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 1500 },
+        .{ .seat = 1, .name = opp_name[0..], .chips = 1500 },
+        .{ .seat = 2, .name = cold_caller[0..], .chips = 1500 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 1,
+        .hole_cards = .{ 6, 12 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+
+    var street = [_]u8{ 'p', 'r', 'e', 'f', 'l', 'o', 'p' };
+    var raise_label = [_]u8{ 'r', 'a', 'i', 's', 'e' };
+    const raise_action = protocol.PlayerAction{
+        .hand_id = hand_id[0..],
+        .street = street[0..],
+        .seat = 1,
+        .player_name = opp_name[0..],
+        .action = raise_label[0..],
+        .amount_paid = 200,
+        .player_bet = 300,
+        .player_chips = 1200,
+        .pot = 450,
+    };
+    try state.onPlayerAction(raise_action);
+
+    var snapshot_players = [_]protocol.PlayerState{
+        .{ .name = hero_name[0..], .chips = 1500, .bet = 0, .folded = false, .all_in = false },
+        .{ .name = opp_name[0..], .chips = 1200, .bet = 300, .folded = false, .all_in = false },
+        .{ .name = cold_caller[0..], .chips = 1200, .bet = 300, .folded = false, .all_in = false },
+    };
+    const snapshot = protocol.GameUpdate{
+        .hand_id = hand_id[0..],
+        .pot = 750,
+        .players = snapshot_players[0..],
+    };
+    state.onGameUpdate(snapshot);
+    const betting = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 300), betting.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 200), betting.last_raise_delta_cents);
 }
 
 test "recordHeroAction fold updates mask" {
