@@ -54,6 +54,9 @@ jobs:
       - name: Check formatting
         run: zig fmt --check .
 
+      - name: Run zlint
+        run: git ls-files '*.zig' | zlint --stdin --deny-warnings
+
       - name: Check for TODO/FIXME comments
         run: |
           if grep -r "TODO\|FIXME" src/ --exclude-dir=.git; then

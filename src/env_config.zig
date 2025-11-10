@@ -38,9 +38,9 @@ pub fn loadConfigFromEnv(
 ) !LoadedConfig {
     var result = LoadedConfig{
         .config = .{
-            .endpoint = undefined,
-            .api_key = undefined,
-            .bot_name = undefined,
+            .endpoint = "",
+            .api_key = "",
+            .bot_name = "",
             .game = null,
             .timeout_ms = overrides.timeout_ms orelse 5000,
         },

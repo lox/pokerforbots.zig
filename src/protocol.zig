@@ -1,7 +1,6 @@
 const std = @import("std");
 const msgpack = @import("msgpack");
 
-const mem = std.mem;
 const meta = std.meta;
 
 const ParseError = error{ParseFailure};
