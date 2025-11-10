@@ -542,11 +542,7 @@ pub const GameState = struct {
             markPreRaiseSnapshot(state, prev_pot_cents, prev_to_call);
             updateRaiseFromTotals(state, prev_max_bet, new_max_bet);
         } else if (new_pot > prev_pot) {
-            const outstanding = self.heroOutstandingCall(new_max_bet);
-            state.to_call_cents = outstanding;
-            if (outstanding == 0) {
-                state.last_raise_delta_cents = 0;
-            }
+            state.to_call_cents = self.heroOutstandingCall(new_max_bet);
         }
     }
 
