@@ -3,6 +3,7 @@ const std = @import("std");
 // Public API
 pub const protocol = @import("protocol.zig");
 pub const client = @import("client.zig");
+pub const env_config = @import("env_config.zig");
 pub const game_state = @import("game_state.zig");
 pub const bot_runner = @import("bot_runner.zig");
 

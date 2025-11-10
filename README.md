@@ -106,6 +106,44 @@ pub fn main() !void {
 }
 ```
 
+## Environment Configuration Helper
+
+When you launch bots via `pokerforbots spawn --bot-cmd`, the spawner sets standard environment variables (endpoint, auth token, bot name, etc.). Use `pfb.env_config.loadConfigFromEnv` to hydrate a `pfb.Config` (and optional deterministic seed) directly from that contract while still allowing CLI overrides:
+
+```zig
+const pfb = @import("pokerforbots");
+
+pub fn main() !void {
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = gpa.deinit();
+    const allocator = gpa.allocator();
+
+    var env_map = try std.process.getEnvMap(allocator);
+    defer env_map.deinit();
+
+    var bundle = try pfb.env_config.loadConfigFromEnv(allocator, &env_map, .{
+        .endpoint = null, // pass CLI override here if supplied
+    });
+    defer bundle.deinit(allocator);
+
+    var bot = MyBot{};
+    try pfb.run(allocator, bundle.config, &bot, MyBot.callbacks, .{});
+}
+```
+
+Supported variables (first match wins):
+
+| Purpose | Primary Var | Secondary Var |
+| --- | --- | --- |
+| WebSocket endpoint | `POKERFORBOTS_SERVER` | — |
+| API key / auth token | `POKERFORBOTS_AUTH_TOKEN` | `POKERFORBOTS_API_KEY` |
+| Bot name | `POKERFORBOTS_BOT_NAME` | `POKERFORBOTS_BOT_ID` |
+| Game identifier | `POKERFORBOTS_GAME` | — |
+| Timeout (ms) | `POKERFORBOTS_TIMEOUT_MS` | — |
+| Seed (u64) | `POKERFORBOTS_SEED` | — |
+
+The helper returns a `LoadedConfig` struct that owns any duplicated strings; call `deinit()` when finished to free them.
+
 ## Game State
 
 The `GameState` struct automatically tracks game information and provides useful queries:
