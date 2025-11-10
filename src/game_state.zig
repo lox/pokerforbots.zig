@@ -527,10 +527,9 @@ pub const GameState = struct {
     ) void {
         var state = self.ensureBettingState();
         state.pot_cents = @as(i64, @intCast(new_pot));
-        const prev_to_call = state.to_call_cents;
 
         if (new_max_bet > prev_max_bet) {
-            applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(new_max_bet)));
+            updateRaiseFromTotals(state, prev_max_bet, new_max_bet);
         } else if (new_pot > prev_pot and state.to_call_cents > 0) {
             state.to_call_cents = 0;
         }
@@ -605,6 +604,14 @@ pub const GameState = struct {
     fn applyRaiseDelta(state: *BettingState, prev_to_call: i64, new_to_call: i64) void {
         state.to_call_cents = new_to_call;
         const delta = new_to_call - prev_to_call;
+        if (delta > 0) {
+            state.last_raise_delta_cents = delta;
+        }
+    }
+
+    fn updateRaiseFromTotals(state: *BettingState, prev_max_bet: u32, new_max_bet: u32) void {
+        state.to_call_cents = @as(i64, @intCast(new_max_bet));
+        const delta: i64 = @intCast(@as(i64, @intCast(new_max_bet)) - @as(i64, @intCast(prev_max_bet)));
         if (delta > 0) {
             state.last_raise_delta_cents = delta;
         }
@@ -1169,17 +1176,18 @@ test "onGameUpdate synchronizes betting snapshot" {
 
     var update_players = [_]protocol.PlayerState{
         .{ .name = hero_name[0..], .chips = 1200, .bet = 300, .folded = false, .all_in = false },
-        .{ .name = opp_name[0..], .chips = 900, .bet = 300, .folded = false, .all_in = false },
+        .{ .name = opp_name[0..], .chips = 600, .bet = 900, .folded = false, .all_in = false },
     };
     const snapshot = protocol.GameUpdate{
         .hand_id = hand_id[0..],
-        .pot = 750,
+        .pot = 1050,
         .players = update_players[0..],
     };
     state.onGameUpdate(snapshot);
     const betting_after_update = state.betting_state.?;
-    try std.testing.expectEqual(@as(i64, 750), betting_after_update.pot_cents);
-    try std.testing.expectEqual(@as(i64, 0), betting_after_update.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 1050), betting_after_update.pot_cents);
+    try std.testing.expectEqual(@as(i64, 900), betting_after_update.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 600), betting_after_update.last_raise_delta_cents);
 }
 
 test "recordHeroAction fold updates mask" {
