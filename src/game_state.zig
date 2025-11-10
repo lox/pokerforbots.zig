@@ -10,6 +10,28 @@ pub const Street = enum(u3) {
     river,
 };
 
+pub const BettingState = struct {
+    /// Current pot size in cents
+    pot_cents: i64,
+    /// Amount to call in cents (0 = no bet to call)
+    to_call_cents: i64,
+    /// Most recent raise delta in cents (increase from previous bet)
+    last_raise_delta_cents: i64,
+    /// Street where this state applies
+    street: Street,
+
+    /// Ratio between the price to call and the current pot.
+    pub fn callRatio(self: BettingState) f64 {
+        if (self.pot_cents <= 0) return 0.0;
+        return @as(f64, @floatFromInt(self.to_call_cents)) / @as(f64, @floatFromInt(self.pot_cents));
+    }
+
+    /// Total chips needed to satisfy a minimum raise.
+    pub fn minRaiseTotal(self: BettingState) i64 {
+        return self.to_call_cents + self.last_raise_delta_cents;
+    }
+};
+
 pub const PlayerInfo = struct {
     seat: u8,
     name: []const u8,
@@ -71,6 +93,7 @@ pub const GameState = struct {
     raise_count: u8 = 0,
     pending_hero_actions: usize = 0,
     hero_index: ?usize = null,
+    betting_state: ?BettingState = null,
 
     pub fn init(allocator: std.mem.Allocator) GameState {
         return .{ .allocator = allocator };
@@ -100,6 +123,7 @@ pub const GameState = struct {
         self.pending_hero_actions = 0;
         self.hero_index = null;
         self.hole_cards = null;
+        self.betting_state = null;
     }
 
     pub fn onHandStart(self: *GameState, start: protocol.HandStart) !void {
@@ -116,6 +140,13 @@ pub const GameState = struct {
         self.street_max_bet = 0;
         self.raise_count = 0;
         self.pending_hero_actions = 0;
+        const blinds_total = @as(u64, start.small_blind) + @as(u64, start.big_blind);
+        self.betting_state = BettingState{
+            .pot_cents = @as(i64, @intCast(blinds_total)),
+            .to_call_cents = @as(i64, @intCast(start.big_blind)),
+            .last_raise_delta_cents = @as(i64, @intCast(start.big_blind)),
+            .street = .preflop,
+        };
 
         if (start.players.len == 0) {
             self.players = &[_]PlayerInfo{};
@@ -162,12 +193,37 @@ pub const GameState = struct {
     pub fn onActionRequest(self: *GameState, request: protocol.ActionRequest) void {
         self.pot = request.pot;
         self.to_call = request.to_call;
+        var state = self.ensureBettingState();
+        state.pot_cents = @as(i64, @intCast(request.pot));
+        state.to_call_cents = @as(i64, @intCast(request.to_call));
+        state.street = self.street;
+    }
+
+    pub fn onGameUpdate(self: *GameState, update: protocol.GameUpdate) void {
+        const prev_pot = self.pot;
+        const prev_max = self.street_max_bet;
+        self.pot = update.pot;
+
+        var new_max: u32 = 0;
+        for (update.players) |player_state| {
+            new_max = @max(new_max, player_state.bet);
+            if (self.findPlayerByName(player_state.name)) |info| {
+                info.chips = player_state.chips;
+                info.bet = player_state.bet;
+                info.folded = player_state.folded;
+                info.all_in = player_state.all_in;
+            }
+        }
+
+        self.syncBettingStateSnapshot(prev_pot, update.pot, prev_max, new_max);
+        self.street_max_bet = new_max;
     }
 
     pub fn onPlayerAction(self: *GameState, action: protocol.PlayerAction) !void {
         const street = try parseStreet(action.street);
         self.street = street;
         self.pot = action.pot;
+        const prev_max_bet = self.street_max_bet;
 
         const seat_idx = self.findPlayerIndex(action.seat) orelse return;
         var info = &self.players[seat_idx];
@@ -180,6 +236,7 @@ pub const GameState = struct {
         }
 
         self.street_max_bet = @max(self.street_max_bet, action.player_bet);
+        self.updateBettingStateFromPlayerAction(kind, action, prev_max_bet);
 
         var fold_state_changed = false;
         if (kind == .fold or kind == .timeout_fold) {
@@ -237,6 +294,7 @@ pub const GameState = struct {
         for (self.players) |*player| {
             player.bet = 0;
         }
+        self.resetBettingStateForNewStreet();
     }
 
     pub fn onHandResult(self: *GameState, result: protocol.HandResult) !void {
@@ -252,6 +310,7 @@ pub const GameState = struct {
     ) !void {
         const idx = self.hero_index orelse return;
         var info = &self.players[idx];
+        const prev_max_bet = self.street_max_bet;
 
         // The amount recorded in history represents the incremental chips
         // committed by hero as part of this decision. Calls only add chips
@@ -312,6 +371,7 @@ pub const GameState = struct {
             },
         }
 
+        self.updateBettingStateAfterHeroAction(action.action_type, prev_max_bet, info.bet);
         self.pending_hero_actions += 1;
     }
 
@@ -371,6 +431,13 @@ pub const GameState = struct {
     fn findPlayer(self: *const GameState, seat: u8) ?*const PlayerInfo {
         for (self.players) |*player| {
             if (player.seat == seat) return player;
+        }
+        return null;
+    }
+
+    fn findPlayerByName(self: *GameState, name: []const u8) ?*PlayerInfo {
+        for (self.players) |*player| {
+            if (std.mem.eql(u8, player.name, name)) return player;
         }
         return null;
     }
@@ -435,6 +502,111 @@ pub const GameState = struct {
             player.chips -= amount;
         } else {
             player.chips = 0;
+        }
+    }
+
+    fn ensureBettingState(self: *GameState) *BettingState {
+        if (self.betting_state) |*state| {
+            return state;
+        }
+        self.betting_state = BettingState{
+            .pot_cents = @as(i64, @intCast(self.pot)),
+            .to_call_cents = @as(i64, @intCast(self.to_call)),
+            .last_raise_delta_cents = 0,
+            .street = self.street,
+        };
+        return &self.betting_state.?;
+    }
+
+    fn syncBettingStateSnapshot(
+        self: *GameState,
+        prev_pot: u32,
+        new_pot: u32,
+        prev_max_bet: u32,
+        new_max_bet: u32,
+    ) void {
+        var state = self.ensureBettingState();
+        state.pot_cents = @as(i64, @intCast(new_pot));
+        const prev_to_call = state.to_call_cents;
+
+        if (new_max_bet > prev_max_bet) {
+            applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(new_max_bet)));
+        } else if (new_pot > prev_pot and state.to_call_cents > 0) {
+            state.to_call_cents = 0;
+        }
+    }
+
+    fn updateBettingStateFromPlayerAction(
+        self: *GameState,
+        kind: ActionKind,
+        action: protocol.PlayerAction,
+        prev_max_bet: u32,
+    ) void {
+        var state = self.ensureBettingState();
+        state.pot_cents = @as(i64, @intCast(action.pot));
+        state.street = self.street;
+        const prev_to_call = state.to_call_cents;
+
+        switch (kind) {
+            .bet, .raise => {
+                applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(action.player_bet)));
+            },
+            .allin => {
+                if (action.player_bet > prev_max_bet) {
+                    applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(action.player_bet)));
+                } else {
+                    state.to_call_cents = 0;
+                }
+            },
+            .call => {
+                state.to_call_cents = 0;
+            },
+            else => {},
+        }
+    }
+
+    fn updateBettingStateAfterHeroAction(
+        self: *GameState,
+        kind: protocol.ActionType,
+        prev_max_bet: u32,
+        hero_total: u32,
+    ) void {
+        var state = self.ensureBettingState();
+        state.pot_cents = @as(i64, @intCast(self.pot));
+        state.street = self.street;
+        const prev_to_call = state.to_call_cents;
+
+        switch (kind) {
+            .bet, .raise => {
+                applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(hero_total)));
+            },
+            .allin => {
+                if (hero_total > prev_max_bet) {
+                    applyRaiseDelta(state, prev_to_call, @as(i64, @intCast(hero_total)));
+                } else {
+                    state.to_call_cents = 0;
+                }
+            },
+            .call => {
+                state.to_call_cents = 0;
+            },
+            else => {},
+        }
+    }
+
+    fn resetBettingStateForNewStreet(self: *GameState) void {
+        var state = self.ensureBettingState();
+        state.pot_cents = @as(i64, @intCast(self.pot));
+        state.to_call_cents = 0;
+        state.last_raise_delta_cents = 0;
+        state.street = self.street;
+    }
+
+    fn applyRaiseDelta(state: *BettingState, prev_to_call: i64, new_to_call: i64) void {
+        state.to_call_cents = new_to_call;
+        const delta = new_to_call - prev_to_call;
+        if (delta > 0) {
+            state.last_raise_delta_cents = delta;
         }
     }
 
@@ -755,6 +927,259 @@ test "onHandResult replaces board" {
     };
     try state.onHandResult(result);
     try std.testing.expectEqualSlices(u8, new_board[0..], state.board);
+}
+
+test "BettingState initializes with blinds" {
+    const allocator = std.testing.allocator;
+    var state = GameState.init(allocator);
+    defer state.deinit();
+
+    var hand_id = [_]u8{'b'};
+    var hero_name = [_]u8{'h'};
+    var opp_name = [_]u8{'o'};
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 1000 },
+        .{ .seat = 1, .name = opp_name[0..], .chips = 1000 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 1,
+        .hole_cards = .{ 7, 8 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+    try std.testing.expect(state.betting_state != null);
+    const betting = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 150), betting.pot_cents);
+    try std.testing.expectEqual(@as(i64, 100), betting.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 100), betting.last_raise_delta_cents);
+    try std.testing.expectEqual(Street.preflop, betting.street);
+}
+
+test "BettingState tracks raises and street changes" {
+    const allocator = std.testing.allocator;
+    var state = GameState.init(allocator);
+    defer state.deinit();
+
+    var hand_id = [_]u8{'r'};
+    var hero_name = [_]u8{'h'};
+    var opp_name = [_]u8{'v'};
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 1200 },
+        .{ .seat = 1, .name = opp_name[0..], .chips = 1200 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 1,
+        .hole_cards = .{ 11, 13 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+
+    var street = [_]u8{ 'p', 'r', 'e', 'f', 'l', 'o', 'p' };
+    var raise_label = [_]u8{ 'r', 'a', 'i', 's', 'e' };
+    const action = protocol.PlayerAction{
+        .hand_id = hand_id[0..],
+        .street = street[0..],
+        .seat = 1,
+        .player_name = opp_name[0..],
+        .action = raise_label[0..],
+        .amount_paid = 200,
+        .player_bet = 300,
+        .player_chips = 900,
+        .pot = 450,
+    };
+    try state.onPlayerAction(action);
+    const betting_after_raise = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 450), betting_after_raise.pot_cents);
+    try std.testing.expectEqual(@as(i64, 200), betting_after_raise.last_raise_delta_cents);
+    try std.testing.expectEqual(Street.preflop, betting_after_raise.street);
+
+    var flop_label = [_]u8{ 'f', 'l', 'o', 'p' };
+    var board = [_]u8{ 9, 10, 11 };
+    const change = protocol.StreetChange{
+        .hand_id = hand_id[0..],
+        .street = flop_label[0..],
+        .board = board[0..],
+    };
+    try state.onStreetChange(change);
+    const betting_flop = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 450), betting_flop.pot_cents);
+    try std.testing.expectEqual(@as(i64, 0), betting_flop.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 0), betting_flop.last_raise_delta_cents);
+    try std.testing.expectEqual(Street.flop, betting_flop.street);
+}
+
+test "BettingState handles sequential raises" {
+    const allocator = std.testing.allocator;
+    var state = GameState.init(allocator);
+    defer state.deinit();
+
+    var hand_id = [_]u8{'s'};
+    var hero_name = [_]u8{'h'};
+    var opp_name = [_]u8{'v'};
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 1500 },
+        .{ .seat = 1, .name = opp_name[0..], .chips = 1500 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 1,
+        .hole_cards = .{ 5, 12 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+
+    var street = [_]u8{ 'p', 'r', 'e', 'f', 'l', 'o', 'p' };
+    var raise_label = [_]u8{ 'r', 'a', 'i', 's', 'e' };
+    const first_raise = protocol.PlayerAction{
+        .hand_id = hand_id[0..],
+        .street = street[0..],
+        .seat = 1,
+        .player_name = opp_name[0..],
+        .action = raise_label[0..],
+        .amount_paid = 200,
+        .player_bet = 300,
+        .player_chips = 1200,
+        .pot = 450,
+    };
+    try state.onPlayerAction(first_raise);
+    const betting_after_first = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 300), betting_after_first.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 200), betting_after_first.last_raise_delta_cents);
+
+    const second_raise = protocol.PlayerAction{
+        .hand_id = hand_id[0..],
+        .street = street[0..],
+        .seat = 1,
+        .player_name = opp_name[0..],
+        .action = raise_label[0..],
+        .amount_paid = 600,
+        .player_bet = 900,
+        .player_chips = 600,
+        .pot = 1050,
+    };
+    try state.onPlayerAction(second_raise);
+    const betting_after_second = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 900), betting_after_second.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 600), betting_after_second.last_raise_delta_cents);
+}
+
+test "BettingState call clears outstanding bet" {
+    const allocator = std.testing.allocator;
+    var state = GameState.init(allocator);
+    defer state.deinit();
+
+    var hand_id = [_]u8{'c'};
+    var hero_name = [_]u8{'h'};
+    var opp_name = [_]u8{'v'};
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 1500 },
+        .{ .seat = 1, .name = opp_name[0..], .chips = 1500 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 1,
+        .hole_cards = .{ 2, 9 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+
+    var street = [_]u8{ 'p', 'r', 'e', 'f', 'l', 'o', 'p' };
+    var raise_label = [_]u8{ 'r', 'a', 'i', 's', 'e' };
+    const raise_action = protocol.PlayerAction{
+        .hand_id = hand_id[0..],
+        .street = street[0..],
+        .seat = 1,
+        .player_name = opp_name[0..],
+        .action = raise_label[0..],
+        .amount_paid = 200,
+        .player_bet = 300,
+        .player_chips = 1200,
+        .pot = 450,
+    };
+    try state.onPlayerAction(raise_action);
+
+    var call_label = [_]u8{ 'c', 'a', 'l', 'l' };
+    const call_action = protocol.PlayerAction{
+        .hand_id = hand_id[0..],
+        .street = street[0..],
+        .seat = 0,
+        .player_name = hero_name[0..],
+        .action = call_label[0..],
+        .amount_paid = 300,
+        .player_bet = 300,
+        .player_chips = 1200,
+        .pot = 750,
+    };
+    try state.onPlayerAction(call_action);
+    const betting_after_call = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 0), betting_after_call.to_call_cents);
+}
+
+test "onGameUpdate synchronizes betting snapshot" {
+    const allocator = std.testing.allocator;
+    var state = GameState.init(allocator);
+    defer state.deinit();
+
+    var hand_id = [_]u8{'g'};
+    var hero_name = [_]u8{'h'};
+    var opp_name = [_]u8{'v'};
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 1500 },
+        .{ .seat = 1, .name = opp_name[0..], .chips = 1500 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 1,
+        .hole_cards = .{ 4, 7 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+
+    var street = [_]u8{ 'p', 'r', 'e', 'f', 'l', 'o', 'p' };
+    var raise_label = [_]u8{ 'r', 'a', 'i', 's', 'e' };
+    const raise_action = protocol.PlayerAction{
+        .hand_id = hand_id[0..],
+        .street = street[0..],
+        .seat = 1,
+        .player_name = opp_name[0..],
+        .action = raise_label[0..],
+        .amount_paid = 200,
+        .player_bet = 300,
+        .player_chips = 1200,
+        .pot = 450,
+    };
+    try state.onPlayerAction(raise_action);
+
+    var update_players = [_]protocol.PlayerState{
+        .{ .name = hero_name[0..], .chips = 1200, .bet = 300, .folded = false, .all_in = false },
+        .{ .name = opp_name[0..], .chips = 900, .bet = 300, .folded = false, .all_in = false },
+    };
+    const snapshot = protocol.GameUpdate{
+        .hand_id = hand_id[0..],
+        .pot = 750,
+        .players = update_players[0..],
+    };
+    state.onGameUpdate(snapshot);
+    const betting_after_update = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 750), betting_after_update.pot_cents);
+    try std.testing.expectEqual(@as(i64, 0), betting_after_update.to_call_cents);
 }
 
 test "recordHeroAction fold updates mask" {

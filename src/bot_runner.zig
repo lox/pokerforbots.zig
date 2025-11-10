@@ -84,7 +84,10 @@ pub fn run(
                 state.reset();
             },
             .game_completed => break,
-            .game_update, .noop => {},
+            .game_update => |update| {
+                state.onGameUpdate(update);
+            },
+            .noop => {},
             .error_message => return error.ServerError,
         }
     }

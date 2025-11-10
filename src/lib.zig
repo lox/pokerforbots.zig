@@ -31,6 +31,7 @@ pub const OutgoingAction = protocol.OutgoingAction;
 pub const GameState = game_state.GameState;
 pub const HistoricalAction = game_state.HistoricalAction;
 pub const PlayerInfo = game_state.PlayerInfo;
+pub const BettingState = game_state.BettingState;
 pub const Street = game_state.Street;
 pub const BotRunOptions = bot_runner.RunOptions;
 pub const BotCallbacks = bot_runner.BotCallbacks;
