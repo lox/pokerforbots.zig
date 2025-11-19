@@ -211,13 +211,34 @@ pub const GameState = struct {
         self.pot = request.pot;
         self.to_call = request.to_call;
         var state = self.ensureBettingState();
+        const hero_contribution: u32 = if (self.hero_index) |idx| self.players[idx].bet else 0;
+        const prev_max_total: u32 = self.street_max_bet;
+        const prev_outstanding: u32 = if (prev_max_total > hero_contribution)
+            prev_max_total - hero_contribution
+        else
+            0;
         state.pot_cents = @as(i64, @intCast(request.pot));
         state.to_call_cents = @as(i64, @intCast(request.to_call));
         state.street = self.street;
         if (state.to_call_cents > 0) {
-            // Estimate pre-raise pot so downstream pot-odds math stays accurate.
-            const pot_before = state.pot_cents - state.to_call_cents;
-            state.pot_before_last_raise_cents = if (pot_before > 0) pot_before else 0;
+            const max_total_u64 = @as(u64, hero_contribution) + @as(u64, request.to_call);
+            const clamped_total: u32 = if (max_total_u64 > @as(u64, std.math.maxInt(u32)))
+                std.math.maxInt(u32)
+            else
+                @intCast(max_total_u64);
+            const new_total: i64 = @intCast(clamped_total);
+            const prev_total: i64 = @intCast(prev_max_total);
+            const delta = new_total - prev_total;
+            if (delta > 0) {
+                // Estimate pre-raise pot so downstream pot-odds math stays accurate.
+                const pot_before = state.pot_cents - state.to_call_cents;
+                state.pot_before_last_raise_cents = if (pot_before > 0) pot_before else 0;
+                state.to_call_before_last_raise_cents = @as(i64, @intCast(prev_outstanding));
+                state.last_raise_delta_cents = delta;
+                if (clamped_total > self.street_max_bet) {
+                    self.street_max_bet = clamped_total;
+                }
+            }
         }
     }
 
@@ -1518,8 +1539,8 @@ test "onActionRequest infers pot snapshot when facing new bet" {
 
     const second_request = protocol.ActionRequest{
         .hand_id = hand_id[0..],
-        .pot = 1950,
-        .to_call = 600,
+        .pot = 2550,
+        .to_call = 1200,
         .legal_actions = legal[0..],
         .min_bet = 0,
         .min_raise = 0,
@@ -1528,9 +1549,11 @@ test "onActionRequest infers pot snapshot when facing new bet" {
     state.onActionRequest(second_request);
 
     const betting = state.betting_state.?;
-    try std.testing.expectEqual(@as(i64, 1950), betting.pot_cents);
-    try std.testing.expectEqual(@as(i64, 600), betting.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 2550), betting.pot_cents);
+    try std.testing.expectEqual(@as(i64, 1200), betting.to_call_cents);
     try std.testing.expectEqual(@as(i64, 1350), betting.pot_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 0), betting.to_call_before_last_raise_cents);
+    try std.testing.expectEqual(@as(i64, 1200), betting.last_raise_delta_cents);
 }
 
 test "onPlayerAction marks all_in when chips hit zero" {
