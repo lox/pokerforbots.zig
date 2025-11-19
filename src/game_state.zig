@@ -214,6 +214,11 @@ pub const GameState = struct {
         state.pot_cents = @as(i64, @intCast(request.pot));
         state.to_call_cents = @as(i64, @intCast(request.to_call));
         state.street = self.street;
+        if (state.to_call_cents > 0) {
+            // Estimate pre-raise pot so downstream pot-odds math stays accurate.
+            const pot_before = state.pot_cents - state.to_call_cents;
+            state.pot_before_last_raise_cents = if (pot_before > 0) pot_before else 0;
+        }
     }
 
     pub fn onGameUpdate(self: *GameState, update: protocol.GameUpdate) void {
@@ -1471,6 +1476,61 @@ test "onActionRequest updates pot and to_call" {
     state.onActionRequest(request);
     try std.testing.expectEqual(@as(u32, 200), state.pot);
     try std.testing.expectEqual(@as(u32, 150), state.to_call);
+}
+
+test "onActionRequest infers pot snapshot when facing new bet" {
+    const allocator = std.testing.allocator;
+    var state = GameState.init(allocator);
+    defer state.deinit();
+
+    var hand_id = [_]u8{'h'};
+    var hero_name = [_]u8{'h'};
+    var villain_name = [_]u8{'v'};
+    var seats = [_]protocol.SeatInfo{
+        .{ .seat = 0, .name = hero_name[0..], .chips = 2000 },
+        .{ .seat = 1, .name = villain_name[0..], .chips = 2000 },
+    };
+    const start = protocol.HandStart{
+        .hand_id = hand_id[0..],
+        .your_seat = 0,
+        .button = 1,
+        .hole_cards = .{ 1, 2 },
+        .small_blind = 50,
+        .big_blind = 100,
+        .players = seats[0..],
+    };
+    try state.onHandStart(start);
+
+    var legal = [_]protocol.ActionDescriptor{.{ .action_type = .call }};
+    const initial_request = protocol.ActionRequest{
+        .hand_id = hand_id[0..],
+        .pot = 450,
+        .to_call = 300,
+        .legal_actions = legal[0..],
+        .min_bet = 0,
+        .min_raise = 0,
+        .time_remaining_ms = 500,
+    };
+    state.onActionRequest(initial_request);
+
+    const hero_raise = protocol.OutgoingAction{ .action_type = .raise, .amount = 900 };
+    try state.recordHeroAction(hero_raise, initial_request);
+
+    const second_request = protocol.ActionRequest{
+        .hand_id = hand_id[0..],
+        .pot = 1950,
+        .to_call = 600,
+        .legal_actions = legal[0..],
+        .min_bet = 0,
+        .min_raise = 0,
+        .time_remaining_ms = 400,
+    };
+    state.onActionRequest(second_request);
+
+    const betting = state.betting_state.?;
+    try std.testing.expectEqual(@as(i64, 1950), betting.pot_cents);
+    try std.testing.expectEqual(@as(i64, 600), betting.to_call_cents);
+    try std.testing.expectEqual(@as(i64, 1350), betting.pot_before_last_raise_cents);
 }
 
 test "onPlayerAction marks all_in when chips hit zero" {
