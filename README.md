@@ -17,7 +17,7 @@ Zig bindings for the [PokerForBots](https://github.com/lox/pokerforbots) poker b
 Requires Zig 0.15.1 or later.
 
 ```bash
-zig fetch --save "git+https://github.com/lox/pokerforbots.zig?ref=v1.2.0"
+zig fetch --save "git+https://github.com/lox/pokerforbots.zig?ref=v1.3.0"
 ```
 
 In your `build.zig`:
